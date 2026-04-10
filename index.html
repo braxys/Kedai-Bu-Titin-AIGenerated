@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kedai Bu Titin - POS</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #fdfbf7; }
+        .glass-card { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); }
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb { background: #f59e0b; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #ea580c; }
+        
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        // Constants
+        const DELETE_PASSWORD = "butitin123";
+
+        function App() {
+            // Firebase State
+            const [fb, setFb] = useState(null);
+            const [user, setUser] = useState(null);
+            const [orders, setOrders] = useState([]);
+            const [isLoading, setIsLoading] = useState(true);
+
+            // Form State
+            const [itemName, setItemName] = useState("");
+            const [itemPrice, setItemPrice] = useState("");
+
+            // Modal & Notif State
+            const [showDeleteModal, setShowDeleteModal] = useState(false);
+            const [orderToDelete, setOrderToDelete] = useState(null);
+            const [passwordInput, setPasswordInput] = useState("");
+            const [deleteError, setDeleteError] = useState("");
+            const [toast, setToast] = useState({ show: false, message: "", type: "success" });
+
+            // Admin State untuk Statistik
+            const [isAdminUnlocked, setIsAdminUnlocked] = useState(false);
+            const [showAdminModal, setShowAdminModal] = useState(false);
+            const [adminPasswordInput, setAdminPasswordInput] = useState("");
+            const [adminError, setAdminError] = useState("");
+
+            // 1. Initialize Firebase & Auth
+            useEffect(() => {
+                const setupBackend = async () => {
+                    if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                        try {
+                            const { initializeApp } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js");
+                            const { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js");
+                            const { getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js");
+
+                            const firebaseConfig = JSON.parse(__firebase_config);
+                            const app = initializeApp(firebaseConfig);
+                            const auth = getAuth(app);
+                            const db = getFirestore(app);
+                            const appId = typeof __app_id !== 'undefined' ? __app_id : 'kedai-bu-titin-pos';
+                            
+                            setFb({ db, appId, collection, onSnapshot, addDoc, deleteDoc, doc });
+
+                            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                                await signInWithCustomToken(auth, __initial_auth_token);
+                            } else {
+                                await signInAnonymously(auth);
+                            }
+
+                            onAuthStateChanged(auth, (currentUser) => {
+                                setUser(currentUser);
+                                if(!currentUser) setIsLoading(false);
+                            });
+                        } catch (error) {
+                            console.error("Firebase Error:", error);
+                            setFb('LOCAL_MODE');
+                            setIsLoading(false);
+                        }
+                    } else {
+                        console.log("Berjalan di Localhost: Menggunakan Mode Lokal.");
+                        setFb('LOCAL_MODE');
+                        setIsLoading(false);
+                    }
+                };
+                setupBackend();
+            }, []);
+
+            // 2. Fetch Data
+            useEffect(() => {
+                if (fb === 'LOCAL_MODE') return; 
+                if (!user || !fb) return;
+
+                const collectionRef = fb.collection(fb.db, 'artifacts', fb.appId, 'users', user.uid, 'orders_kedai_titin');
+                
+                const unsubscribe = fb.onSnapshot(collectionRef, 
+                    (snapshot) => {
+                        const data = [];
+                        snapshot.forEach((doc) => {
+                            data.push({ id: doc.id, ...doc.data() });
+                        });
+                        
+                        data.sort((a, b) => b.timestamp - a.timestamp);
+                        setOrders(data);
+                        setIsLoading(false);
+                    },
+                    (error) => {
+                        console.error("Firestore Error:", error);
+                        showToast("Gagal mengambil data pesanan.", "error");
+                        setIsLoading(false);
+                    }
+                );
+
+                return () => unsubscribe();
+            }, [user, fb]);
+
+            // Render icons on update
+            useEffect(() => {
+                if (window.lucide) {
+                    window.lucide.createIcons();
+                }
+            });
+
+            // 3. Handlers
+            const showToast = (message, type = "success") => {
+                setToast({ show: true, message, type });
+                setTimeout(() => setToast({ show: false, message: "", type: "success" }), 3000);
+            };
+
+            const formatRupiah = (number) => {
+                return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(number);
+            };
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                if (!itemName.trim() || !itemPrice) {
+                    showToast("Nama pesanan dan harga wajib diisi!", "error");
+                    return;
+                }
+
+                const newOrder = {
+                    name: itemName.trim(),
+                    price: Number(itemPrice),
+                    timestamp: Date.now()
+                };
+
+                if (fb === 'LOCAL_MODE') {
+                    setOrders(prev => [{id: Date.now().toString(), ...newOrder}, ...prev]);
+                    setItemName("");
+                    setItemPrice("");
+                    showToast("Pesanan ditambahkan (Mode Lokal)", "success");
+                    document.getElementById('itemNameInput').focus();
+                    return;
+                }
+
+                if (!user || !fb) return;
+
+                try {
+                    const collectionRef = fb.collection(fb.db, 'artifacts', fb.appId, 'users', user.uid, 'orders_kedai_titin');
+                    await fb.addDoc(collectionRef, newOrder);
+                    
+                    setItemName("");
+                    setItemPrice("");
+                    showToast("Pesanan berhasil ditambahkan!", "success");
+                    document.getElementById('itemNameInput').focus();
+                } catch (error) {
+                    console.error("Add Error:", error);
+                    showToast("Gagal menambahkan pesanan.", "error");
+                }
+            };
+
+            const initiateDelete = (id) => {
+                setOrderToDelete(id);
+                setPasswordInput("");
+                setDeleteError("");
+                setShowDeleteModal(true);
+            };
+
+            const confirmDelete = async () => {
+                if (passwordInput !== DELETE_PASSWORD) {
+                    setDeleteError("Password Salah!");
+                    return;
+                }
+
+                if (fb === 'LOCAL_MODE') {
+                    setOrders(prev => prev.filter(o => o.id !== orderToDelete));
+                    setShowDeleteModal(false);
+                    showToast("Pesanan dihapus (Mode Lokal)", "success");
+                    return;
+                }
+
+                if (!user || !fb || !orderToDelete) return;
+
+                try {
+                    const docRef = fb.doc(fb.db, 'artifacts', fb.appId, 'users', user.uid, 'orders_kedai_titin', orderToDelete);
+                    await fb.deleteDoc(docRef);
+                    setShowDeleteModal(false);
+                    showToast("Pesanan berhasil dihapus.", "success");
+                } catch (error) {
+                    console.error("Delete Error:", error);
+                    setDeleteError("Terjadi kesalahan sistem saat menghapus.");
+                }
+            };
+
+            const exportToCSV = () => {
+                if (orders.length === 0) {
+                    showToast("Belum ada data untuk diekspor.", "error");
+                    return;
+                }
+
+                const csvRows = [];
+                csvRows.push(["Tanggal", "Waktu", "Nama Pesanan", "Harga (Rp)"].join(','));
+                
+                orders.forEach(order => {
+                    const dateObj = new Date(order.timestamp);
+                    const dateStr = dateObj.toLocaleDateString('id-ID');
+                    const timeStr = dateObj.toLocaleTimeString('id-ID');
+                    const safeName = `"${order.name.replace(/"/g, '""')}"`;
+                    csvRows.push([dateStr, timeStr, safeName, order.price].join(','));
+                });
+
+                const csvContent = csvRows.join('\n');
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                
+                const link = document.createElement("a");
+                link.setAttribute("href", url);
+                link.setAttribute("download", `Data_Pesanan_Kedai_Bu_Titin_${new Date().toLocaleDateString('id-ID')}.csv`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                
+                showToast("Data berhasil diunduh!", "success");
+            };
+
+            const handleUnlockAdmin = () => {
+                if (adminPasswordInput === DELETE_PASSWORD) {
+                    setIsAdminUnlocked(true);
+                    setShowAdminModal(false);
+                    setAdminPasswordInput("");
+                    setAdminError("");
+                    showToast("Akses Admin Terbuka!", "success");
+                } else {
+                    setAdminError("Password Admin Salah!");
+                }
+            };
+
+            // 4. Kalkulasi Statistik Waktu Nyata (Otomatis Reset)
+            const stats = useMemo(() => {
+                const now = new Date();
+                const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+                const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+
+                let dailyTotal = 0;
+                let dailyCount = 0;
+                let monthlyTotal = 0;
+                let monthlyCount = 0;
+                let overallTotal = 0;
+                let overallCount = orders.length;
+
+                orders.forEach(order => {
+                    const ts = order.timestamp;
+                    const price = order.price;
+
+                    overallTotal += price;
+
+                    // Hitung Bulanan
+                    if (ts >= monthStart) {
+                        monthlyTotal += price;
+                        monthlyCount++;
+                        
+                        // Hitung Harian (hanya jika juga masuk bulan ini, yang mana pasti iya)
+                        if (ts >= todayStart) {
+                            dailyTotal += price;
+                            dailyCount++;
+                        }
+                    }
+                });
+
+                return {
+                    daily: { total: dailyTotal, count: dailyCount },
+                    monthly: { total: monthlyTotal, count: monthlyCount },
+                    overall: { total: overallTotal, count: overallCount }
+                };
+            }, [orders]);
+
+            if (isLoading) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center bg-yellow-50">
+                        <div className="flex flex-col items-center gap-3">
+                            <i data-lucide="loader-2" className="w-10 h-10 text-orange-500 animate-spin"></i>
+                            <div className="text-xl font-bold text-orange-700 animate-pulse">Menyiapkan Dapur...</div>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="min-h-screen bg-yellow-50 font-sans text-gray-800 pb-12">
+                    {/* NAVBAR */}
+                    <nav className="bg-gradient-to-r from-red-600 via-orange-500 to-yellow-500 text-white shadow-lg py-4 px-4 sm:px-6 md:px-8 sticky top-0 z-40">
+                        <div className="max-w-7xl mx-auto flex justify-between items-center">
+                            <div className="flex items-center gap-3">
+                                <div className="bg-white text-red-600 p-2 rounded-full shadow-md flex items-center justify-center">
+                                    <i data-lucide="utensils-crossed" className="w-6 h-6 sm:w-7 sm:h-7"></i>
+                                </div>
+                                <div>
+                                    <h1 className="text-xl sm:text-2xl md:text-3xl font-extrabold tracking-tight">Kedai Bu Titin</h1>
+                                    <p className="text-yellow-100 text-xs sm:text-sm opacity-90 font-medium">Sistem Kasir Pintar</p>
+                                </div>
+                            </div>
+                            <div className="hidden sm:flex items-center gap-2 text-sm bg-black/10 px-3 py-1.5 rounded-full backdrop-blur-sm">
+                                <i data-lucide="calendar" className="w-4 h-4"></i>
+                                {new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                            </div>
+                        </div>
+                    </nav>
+
+                    <main className="max-w-7xl mx-auto px-4 sm:px-6 md:px-8 mt-6">
+                        
+                        {/* KARTU STATISTIK (RESPONSIF GRID) */}
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                            {/* Hari Ini */}
+                            <div className="bg-white p-5 rounded-2xl shadow-sm border border-orange-100 flex items-center gap-4 hover:shadow-md transition-shadow fade-in">
+                                <div className="bg-orange-100 p-4 rounded-xl text-orange-600">
+                                    <i data-lucide="sun" className="w-8 h-8"></i>
+                                </div>
+                                <div>
+                                    <p className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Hari Ini</p>
+                                    <h3 className="text-2xl font-bold text-gray-800">{formatRupiah(stats.daily.total)}</h3>
+                                    <p className="text-xs font-medium text-orange-600 bg-orange-50 inline-block px-2 py-0.5 rounded-md mt-1">{stats.daily.count} Pesanan</p>
+                                </div>
+                            </div>
+
+                            {/* Bulan Ini */}
+                            <div 
+                                onClick={() => !isAdminUnlocked && setShowAdminModal(true)}
+                                className={`bg-white p-5 rounded-2xl shadow-sm border border-red-100 flex items-center gap-4 transition-all fade-in ${!isAdminUnlocked ? 'cursor-pointer hover:bg-red-50 hover:shadow-md' : 'hover:shadow-md'}`} style={{animationDelay: '0.1s'}}>
+                                <div className={`p-4 rounded-xl ${isAdminUnlocked ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-500'}`}>
+                                    <i data-lucide={isAdminUnlocked ? "calendar-days" : "lock"} className="w-8 h-8"></i>
+                                </div>
+                                <div className="flex-1">
+                                    <p className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Bulan Ini</p>
+                                    {isAdminUnlocked ? (
+                                        <>
+                                            <h3 className="text-2xl font-bold text-gray-800">{formatRupiah(stats.monthly.total)}</h3>
+                                            <p className="text-xs font-medium text-red-600 bg-red-50 inline-block px-2 py-0.5 rounded-md mt-1">{stats.monthly.count} Pesanan</p>
+                                        </>
+                                    ) : (
+                                        <p className="text-sm font-medium text-gray-400 mt-1 italic flex items-center gap-1">
+                                            <span>Ketuk untuk buka</span>
+                                        </p>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Keseluruhan */}
+                            <div 
+                                onClick={() => !isAdminUnlocked && setShowAdminModal(true)}
+                                className={`p-5 rounded-2xl shadow-md flex items-center gap-4 transition-all fade-in ${!isAdminUnlocked ? 'bg-white border border-gray-200 cursor-pointer hover:bg-gray-50 text-gray-800' : 'bg-gradient-to-br from-yellow-400 to-orange-500 text-white hover:shadow-lg'}`} style={{animationDelay: '0.2s'}}>
+                                <div className={`p-4 rounded-xl ${isAdminUnlocked ? 'bg-white/20 backdrop-blur-sm' : 'bg-gray-100 text-gray-500'}`}>
+                                    <i data-lucide={isAdminUnlocked ? "wallet" : "lock"} className="w-8 h-8"></i>
+                                </div>
+                                <div className="flex-1">
+                                    <p className={`text-sm font-semibold uppercase tracking-wider ${isAdminUnlocked ? 'text-yellow-100' : 'text-gray-500'}`}>Total Keseluruhan</p>
+                                    {isAdminUnlocked ? (
+                                        <>
+                                            <h3 className="text-2xl font-bold">{formatRupiah(stats.overall.total)}</h3>
+                                            <p className="text-xs font-medium bg-black/20 inline-block px-2 py-0.5 rounded-md mt-1">{stats.overall.count} Total Pesanan</p>
+                                        </>
+                                    ) : (
+                                        <p className="text-sm font-medium text-gray-400 mt-1 italic flex items-center gap-1">
+                                            <span>Ketuk untuk buka</span>
+                                        </p>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="flex flex-col lg:flex-row gap-6">
+                            
+                            {/* BAGIAN KIRI: Form Input */}
+                            <div className="w-full lg:w-1/3">
+                                <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 sticky top-28">
+                                    <h2 className="text-xl font-bold mb-5 flex items-center gap-2 text-gray-800 border-b pb-3">
+                                        <div className="bg-orange-100 p-1.5 rounded-lg text-orange-600"><i data-lucide="plus" className="w-5 h-5"></i></div>
+                                        Input Pesanan Baru
+                                    </h2>
+                                    
+                                    <form onSubmit={handleSubmit} className="space-y-5">
+                                        <div>
+                                            <label className="block text-sm font-bold text-gray-700 mb-1.5">Nama Pesanan</label>
+                                            <input 
+                                                id="itemNameInput"
+                                                type="text" 
+                                                value={itemName}
+                                                onChange={(e) => setItemName(e.target.value)}
+                                                placeholder="Cth: Nasi Goreng + Es Teh"
+                                                className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none transition duration-200"
+                                            />
+                                        </div>
+                                        
+                                        <div>
+                                            <label className="block text-sm font-bold text-gray-700 mb-1.5">Harga Total (Rp)</label>
+                                            <input 
+                                                type="number" 
+                                                value={itemPrice}
+                                                onChange={(e) => setItemPrice(e.target.value)}
+                                                placeholder="Cth: 25000"
+                                                className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none transition duration-200 font-mono"
+                                            />
+                                        </div>
+
+                                        <button 
+                                            type="submit" 
+                                            className="w-full bg-gradient-to-r from-red-500 to-orange-500 hover:from-red-600 hover:to-orange-600 text-white font-bold py-3.5 rounded-xl shadow-md hover:shadow-lg transition duration-200 flex justify-center items-center gap-2 text-lg"
+                                        >
+                                            <i data-lucide="save" className="w-5 h-5"></i>
+                                            Simpan
+                                        </button>
+                                    </form>
+                                    
+                                    {fb === 'LOCAL_MODE' && (
+                                        <div className="mt-4 p-3 bg-yellow-100 border border-yellow-300 text-yellow-800 text-xs rounded-lg flex gap-2">
+                                            <i data-lucide="info" className="w-4 h-4 flex-shrink-0 mt-0.5"></i>
+                                            <span>Mode Lokal: Data hanya tersimpan sementara karena Anda menjalankan file ini secara langsung.</span>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* BAGIAN KANAN: Tabel Data */}
+                            <div className="w-full lg:w-2/3">
+                                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col h-full">
+                                    <div className="p-5 border-b border-gray-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-gray-50/50 rounded-t-2xl">
+                                        <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                                            <div className="bg-red-100 p-1.5 rounded-lg text-red-600"><i data-lucide="list-ordered" className="w-5 h-5"></i></div>
+                                            Riwayat Pesanan
+                                        </h2>
+                                        <button 
+                                            onClick={exportToCSV}
+                                            className="bg-green-600 hover:bg-green-700 text-white text-sm font-semibold py-2.5 px-5 rounded-xl shadow-sm hover:shadow transition flex items-center gap-2 w-full sm:w-auto justify-center"
+                                        >
+                                            <i data-lucide="download" className="w-4 h-4"></i>
+                                            Ekspor ke Excel
+                                        </button>
+                                    </div>
+                                    
+                                    {/* Wrapper untuk tabel responsif */}
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-left border-collapse min-w-[500px]">
+                                            <thead>
+                                                <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider border-b border-gray-100">
+                                                    <th className="p-4 font-bold w-1/4">Waktu</th>
+                                                    <th className="p-4 font-bold w-1/2">Menu Pesanan</th>
+                                                    <th className="p-4 font-bold">Harga</th>
+                                                    <th className="p-4 font-bold text-center w-16">Opsi</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-100">
+                                                {orders.length === 0 ? (
+                                                    <tr>
+                                                        <td colSpan="4" className="p-12 text-center text-gray-400">
+                                                            <div className="flex flex-col items-center gap-3">
+                                                                <i data-lucide="inbox" className="w-12 h-12 text-gray-300"></i>
+                                                                <p>Belum ada data pesanan.</p>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                ) : (
+                                                    orders.map((order) => {
+                                                        const dateObj = new Date(order.timestamp);
+                                                        return (
+                                                            <tr key={order.id} className="hover:bg-orange-50/50 transition-colors group">
+                                                                <td className="p-4 whitespace-nowrap">
+                                                                    <div className="text-sm font-bold text-gray-800">{dateObj.toLocaleTimeString('id-ID', {hour: '2-digit', minute:'2-digit'})}</div>
+                                                                    <div className="text-xs text-gray-500">{dateObj.toLocaleDateString('id-ID', {day:'numeric', month:'short', year:'numeric'})}</div>
+                                                                </td>
+                                                                <td className="p-4">
+                                                                    <span className="font-semibold text-gray-800 text-sm md:text-base">{order.name}</span>
+                                                                </td>
+                                                                <td className="p-4">
+                                                                    <span className="font-bold text-green-600 bg-green-50 px-2 py-1 rounded-md text-sm whitespace-nowrap">{formatRupiah(order.price)}</span>
+                                                                </td>
+                                                                <td className="p-4 text-center align-middle">
+                                                                    <button 
+                                                                        onClick={() => initiateDelete(order.id)}
+                                                                        className="text-red-400 hover:text-red-600 hover:bg-red-50 p-2 rounded-lg transition opacity-100 sm:opacity-0 group-hover:opacity-100 focus:opacity-100"
+                                                                        title="Hapus Pesanan"
+                                                                    >
+                                                                        <i data-lucide="trash-2" className="w-5 h-5"></i>
+                                                                    </button>
+                                                                </td>
+                                                            </tr>
+                                                        );
+                                                    })
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </main>
+
+                    {/* NOTIFIKASI TOAST */}
+                    {toast.show && (
+                        <div className={`fixed bottom-6 right-6 flex items-center gap-3 text-white px-6 py-4 rounded-xl shadow-2xl animate-bounce z-50 ${toast.type === 'error' ? 'bg-red-600' : 'bg-green-600'}`}>
+                            <i data-lucide={toast.type === 'error' ? 'alert-triangle' : 'check-circle'} className="w-6 h-6"></i>
+                            <span className="font-bold">{toast.message}</span>
+                        </div>
+                    )}
+
+                    {/* MODAL HAPUS PESANAN */}
+                    {showDeleteModal && (
+                        <div className="fixed inset-0 bg-gray-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 fade-in">
+                            <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl transform scale-100 transition-transform">
+                                <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                                    <i data-lucide="shield-alert" className="text-red-500 w-6 h-6"></i>
+                                </div>
+                                <h3 className="text-xl font-bold text-gray-800 text-center mb-2">
+                                    Otorisasi Admin
+                                </h3>
+                                <p className="text-sm text-gray-500 text-center mb-6">
+                                    Tindakan ini memerlukan kata sandi.
+                                </p>
+                                
+                                <div className="relative mb-2">
+                                    <i data-lucide="lock" className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5"></i>
+                                    <input 
+                                        type="password" 
+                                        value={passwordInput}
+                                        onChange={(e) => setPasswordInput(e.target.value)}
+                                        placeholder="Masukkan kata sandi..."
+                                        className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition"
+                                        autoFocus
+                                        onKeyDown={(e) => { if(e.key === 'Enter') confirmDelete(); }}
+                                    />
+                                </div>
+                                
+                                {deleteError && <p className="text-sm text-red-500 mb-4 font-semibold text-center animate-pulse">{deleteError}</p>}
+
+                                <div className="flex gap-3 mt-6">
+                                    <button 
+                                        onClick={() => setShowDeleteModal(false)}
+                                        className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 rounded-xl transition"
+                                    >
+                                        Batal
+                                    </button>
+                                    <button 
+                                        onClick={confirmDelete}
+                                        className="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-xl transition shadow-md shadow-red-500/30"
+                                    >
+                                        Hapus Data
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* MODAL AKSES ADMIN */}
+                    {showAdminModal && (
+                        <div className="fixed inset-0 bg-gray-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 fade-in">
+                            <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl transform scale-100 transition-transform">
+                                <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                                    <i data-lucide="lock-keyhole" className="text-blue-600 w-6 h-6"></i>
+                                </div>
+                                <h3 className="text-xl font-bold text-gray-800 text-center mb-2">
+                                    Akses Admin
+                                </h3>
+                                <p className="text-sm text-gray-500 text-center mb-6">
+                                    Masukkan kata sandi untuk melihat total pendapatan bulanan dan keseluruhan.
+                                </p>
+                                
+                                <div className="relative mb-2">
+                                    <i data-lucide="key" className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5"></i>
+                                    <input 
+                                        type="password" 
+                                        value={adminPasswordInput}
+                                        onChange={(e) => setAdminPasswordInput(e.target.value)}
+                                        placeholder="Masukkan kata sandi..."
+                                        className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
+                                        autoFocus
+                                        onKeyDown={(e) => { if(e.key === 'Enter') handleUnlockAdmin(); }}
+                                    />
+                                </div>
+                                
+                                {adminError && <p className="text-sm text-red-500 mb-4 font-semibold text-center animate-pulse">{adminError}</p>}
+
+                                <div className="flex gap-3 mt-6">
+                                    <button 
+                                        onClick={() => setShowAdminModal(false)}
+                                        className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 rounded-xl transition"
+                                    >
+                                        Tutup
+                                    </button>
+                                    <button 
+                                        onClick={handleUnlockAdmin}
+                                        className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl transition shadow-md shadow-blue-500/30"
+                                    >
+                                        Buka Akses
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
