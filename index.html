@@ -36,6 +36,17 @@
         // Constants
         const DELETE_PASSWORD = "butitin123";
 
+        // Konfigurasi Firebase dari pengguna
+        const MY_FIREBASE_CONFIG = {
+            apiKey: "AIzaSyDeAxdaokFnPsqDUAEBWBjjTjCTSXYk8U8",
+            authDomain: "kedai-bu-titin.firebaseapp.com",
+            projectId: "kedai-bu-titin",
+            storageBucket: "kedai-bu-titin.firebasestorage.app",
+            messagingSenderId: "735859710275",
+            appId: "1:735859710275:web:4adca4554734f4f36cb7f6",
+            measurementId: "G-0MN2Q7XH5Y"
+        };
+
         function App() {
             // Firebase State
             const [fb, setFb] = useState(null);
@@ -63,14 +74,21 @@
             // 1. Initialize Firebase & Auth
             useEffect(() => {
                 const setupBackend = async () => {
+                    let configToUse = null;
                     if (typeof __firebase_config !== 'undefined' && __firebase_config) {
-                        try {
-                            const { initializeApp } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js");
-                            const { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js");
-                            const { getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js");
+                        configToUse = JSON.parse(__firebase_config); // Berjalan di dalam Canvas sini
+                    } else if (MY_FIREBASE_CONFIG.apiKey) {
+                        configToUse = MY_FIREBASE_CONFIG; // Berjalan di Vercel dengan database Anda
+                    }
 
-                            const firebaseConfig = JSON.parse(__firebase_config);
-                            const app = initializeApp(firebaseConfig);
+                    if (configToUse) {
+                        try {
+                            // Menggunakan new Function agar Babel tidak mengubah sintaks import() menjadi require()
+                            const { initializeApp } = await new Function('return import("https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js")')();
+                            const { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } = await new Function('return import("https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js")')();
+                            const { getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc } = await new Function('return import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js")')();
+
+                            const app = initializeApp(configToUse);
                             const auth = getAuth(app);
                             const db = getFirestore(app);
                             const appId = typeof __app_id !== 'undefined' ? __app_id : 'kedai-bu-titin-pos';
@@ -89,12 +107,13 @@
                             });
                         } catch (error) {
                             console.error("Firebase Error:", error);
-                            setFb('LOCAL_MODE');
+                            showToast("Gagal terhubung ke database.", "error");
                             setIsLoading(false);
                         }
                     } else {
-                        console.log("Berjalan di Localhost: Menggunakan Mode Lokal.");
-                        setFb('LOCAL_MODE');
+                        console.log("Berjalan di Vercel tanpa Firebase Config.");
+                        showToast("PENTING: Isi MY_FIREBASE_CONFIG di dalam kode agar data tersimpan!", "error");
+                        setFb('NO_DB');
                         setIsLoading(false);
                     }
                 };
@@ -103,10 +122,11 @@
 
             // 2. Fetch Data
             useEffect(() => {
-                if (fb === 'LOCAL_MODE') return; 
+                if (fb === 'NO_DB') return; 
                 if (!user || !fb) return;
 
-                const collectionRef = fb.collection(fb.db, 'artifacts', fb.appId, 'users', user.uid, 'orders_kedai_titin');
+                // Menggunakan path 'public/data' agar data tersinkronisasi di semua perangkat (misal: HP owner & Tablet kasir)
+                const collectionRef = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'orders_kedai_titin');
                 
                 const unsubscribe = fb.onSnapshot(collectionRef, 
                     (snapshot) => {
@@ -159,19 +179,15 @@
                     timestamp: Date.now()
                 };
 
-                if (fb === 'LOCAL_MODE') {
-                    setOrders(prev => [{id: Date.now().toString(), ...newOrder}, ...prev]);
-                    setItemName("");
-                    setItemPrice("");
-                    showToast("Pesanan ditambahkan (Mode Lokal)", "success");
-                    document.getElementById('itemNameInput').focus();
+                if (fb === 'NO_DB') {
+                    showToast("Error: Konfigurasi Firebase kosong. Data tidak bisa disimpan!", "error");
                     return;
                 }
 
                 if (!user || !fb) return;
 
                 try {
-                    const collectionRef = fb.collection(fb.db, 'artifacts', fb.appId, 'users', user.uid, 'orders_kedai_titin');
+                    const collectionRef = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'orders_kedai_titin');
                     await fb.addDoc(collectionRef, newOrder);
                     
                     setItemName("");
@@ -197,17 +213,15 @@
                     return;
                 }
 
-                if (fb === 'LOCAL_MODE') {
-                    setOrders(prev => prev.filter(o => o.id !== orderToDelete));
-                    setShowDeleteModal(false);
-                    showToast("Pesanan dihapus (Mode Lokal)", "success");
+                if (fb === 'NO_DB') {
+                    showToast("Error: Konfigurasi Firebase kosong.", "error");
                     return;
                 }
 
                 if (!user || !fb || !orderToDelete) return;
 
                 try {
-                    const docRef = fb.doc(fb.db, 'artifacts', fb.appId, 'users', user.uid, 'orders_kedai_titin', orderToDelete);
+                    const docRef = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'orders_kedai_titin', orderToDelete);
                     await fb.deleteDoc(docRef);
                     setShowDeleteModal(false);
                     showToast("Pesanan berhasil dihapus.", "success");
@@ -427,24 +441,24 @@
                                         </div>
 
                                         <button 
-                                            type="submit" 
-                                            className="w-full bg-gradient-to-r from-red-500 to-orange-500 hover:from-red-600 hover:to-orange-600 text-white font-bold py-3.5 rounded-xl shadow-md hover:shadow-lg transition duration-200 flex justify-center items-center gap-2 text-lg"
-                                        >
-                                            <i data-lucide="save" className="w-5 h-5"></i>
-                                            Simpan
-                                        </button>
-                                    </form>
-                                    
-                                    {fb === 'LOCAL_MODE' && (
-                                        <div className="mt-4 p-3 bg-yellow-100 border border-yellow-300 text-yellow-800 text-xs rounded-lg flex gap-2">
-                                            <i data-lucide="info" className="w-4 h-4 flex-shrink-0 mt-0.5"></i>
-                                            <span>Mode Lokal: Data hanya tersimpan sementara karena Anda menjalankan file ini secara langsung.</span>
-                                        </div>
-                                    )}
-                                </div>
+                                        type="submit" 
+                                        className="w-full bg-gradient-to-r from-red-500 to-orange-500 hover:from-red-600 hover:to-orange-600 text-white font-bold py-3.5 rounded-xl shadow-md hover:shadow-lg transition duration-200 flex justify-center items-center gap-2 text-lg"
+                                    >
+                                        <i data-lucide="save" className="w-5 h-5"></i>
+                                        Simpan
+                                    </button>
+                                </form>
+                                
+                                {fb === 'NO_DB' && (
+                                    <div className="mt-4 p-3 bg-red-100 border border-red-300 text-red-800 text-xs rounded-lg flex gap-2">
+                                        <i data-lucide="alert-triangle" className="w-4 h-4 flex-shrink-0 mt-0.5"></i>
+                                        <span>PERHATIAN: Anda belum mengisi MY_FIREBASE_CONFIG. Pesanan tidak akan bisa disimpan dan akan hilang saat di-refresh.</span>
+                                    </div>
+                                )}
                             </div>
+                        </div>
 
-                            {/* BAGIAN KANAN: Tabel Data */}
+                        {/* BAGIAN KANAN: Tabel Data */}
                             <div className="w-full lg:w-2/3">
                                 <div className="bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col h-full">
                                     <div className="p-5 border-b border-gray-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-gray-50/50 rounded-t-2xl">
