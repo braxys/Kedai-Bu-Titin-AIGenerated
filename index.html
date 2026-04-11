@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kedai Bu Titin - POS</title>
+    <title>Kedai Bu Titin</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- React & ReactDOM -->
@@ -36,6 +36,7 @@
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
+        // Mengekspos Firebase ke window agar bisa dibaca dengan aman oleh React
         window.FirebaseAPI = {
             initializeApp, getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken,
             getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc
@@ -47,7 +48,14 @@
 
         const DELETE_PASSWORD = "butitin123";
 
-        // Konfigurasi Firebase dari pengguna
+        // Daftar Akun Pengguna (Bisa diganti nama & PIN-nya nanti)
+        const APP_USERS = [
+            { name: 'Admin', role: 'ADMIN', pin: 'butitin123' },
+            { name: 'Siti', role: 'KASIR', pin: '1111' },
+            { name: 'Budi', role: 'KASIR', pin: '2222' }
+        ];
+
+        // 🔴 PENTING UNTUK VERCEL: Masukkan konfigurasi Firebase Anda di bawah ini
         const MY_FIREBASE_CONFIG = {
             apiKey: "AIzaSyDeAxdaokFnPsqDUAEBWBjjTjCTSXYk8U8",
             authDomain: "kedai-bu-titin.firebaseapp.com",
@@ -56,6 +64,28 @@
             messagingSenderId: "735859710275",
             appId: "1:735859710275:web:4adca4554734f4f36cb7f6",
             measurementId: "G-0MN2Q7XH5Y"
+        };
+
+        // Komponen Icon yang aman untuk React
+        const Icon = ({ name, className }) => {
+            const iconRef = useRef(null);
+
+            useEffect(() => {
+                if (iconRef.current && window.lucide) {
+                    // Bersihkan ikon lama jika ada
+                    iconRef.current.innerHTML = '';
+                    
+                    // Buat elemen <i> baru untuk diubah oleh Lucide
+                    const i = document.createElement('i');
+                    i.setAttribute('data-lucide', name);
+                    if (className) i.className = className;
+                    
+                    iconRef.current.appendChild(i);
+                    window.lucide.createIcons({ root: iconRef.current });
+                }
+            }, [name, className]);
+
+            return <span ref={iconRef} className="inline-flex items-center justify-center"></span>;
         };
 
         function App() {
@@ -70,7 +100,11 @@
             const [itemPrice, setItemPrice] = useState("");
 
             // Global & Modal State
-            const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
+            const [activeUser, setActiveUser] = useState(null); // Menyimpan data user yang sedang login
+            const [selectedUserForLogin, setSelectedUserForLogin] = useState(null); // User yang dipilih di layar login
+            const [isTempAdminUnlocked, setIsTempAdminUnlocked] = useState(false); // Untuk kasir yang buka akses admin
+            const [loginPin, setLoginPin] = useState("");
+            const [loginError, setLoginError] = useState("");
             
             // Pending Action State (menyimpan aksi yang tertunda karena butuh login admin)
             const [pendingDeleteId, setPendingDeleteId] = useState(null);
@@ -89,9 +123,9 @@
                 const setupBackend = () => {
                     let configToUse = null;
                     if (typeof __firebase_config !== 'undefined' && __firebase_config) {
-                        configToUse = JSON.parse(__firebase_config); 
+                        configToUse = JSON.parse(__firebase_config); // Canvas env
                     } else if (MY_FIREBASE_CONFIG.apiKey) {
-                        configToUse = MY_FIREBASE_CONFIG; 
+                        configToUse = MY_FIREBASE_CONFIG; // Vercel env
                     }
 
                     if (configToUse) {
@@ -150,6 +184,7 @@
                 if (fb === 'NO_DB' || fb === 'ERROR') return; 
                 if (!user || !fb) return;
 
+                // Path public data
                 const collectionRef = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'orders_kedai_titin');
                 
                 const unsubscribe = fb.onSnapshot(collectionRef, 
@@ -173,10 +208,6 @@
                 return () => unsubscribe();
             }, [user, fb]);
 
-            useEffect(() => {
-                if (window.lucide) window.lucide.createIcons();
-            });
-
             // Fokus ke input password saat modal admin terbuka
             useEffect(() => {
                 if(showAdminLoginModal && passwordInputRef.current) {
@@ -184,7 +215,24 @@
                 }
             }, [showAdminLoginModal]);
 
+            // Status Otorisasi (Apakah Admin atau Kasir yang sudah buka akses admin)
+            const isAuthorized = activeUser?.role === 'ADMIN' || isTempAdminUnlocked;
+
             // --- Handlers & Actions ---
+
+            const handleAppLogin = (e) => {
+                e.preventDefault();
+                if (selectedUserForLogin && selectedUserForLogin.pin === loginPin) {
+                    setActiveUser(selectedUserForLogin);
+                    setLoginPin("");
+                    setLoginError("");
+                    setIsTempAdminUnlocked(false);
+                    setSelectedUserForLogin(null); // Reset form login
+                    showToast(`Selamat datang, ${selectedUserForLogin.name}!`, "success");
+                } else {
+                    setLoginError("PIN salah!");
+                }
+            };
 
             const showToast = (message, type = "success") => {
                 setToast({ show: true, message, type });
@@ -195,6 +243,7 @@
                 return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(number);
             };
 
+            // Tambah Pesanan
             const handleSubmit = async (e) => {
                 e.preventDefault();
                 if (!itemName.trim() || !itemPrice) {
@@ -205,7 +254,8 @@
                 const newOrder = {
                     name: itemName.trim(),
                     price: Number(itemPrice),
-                    timestamp: Date.now()
+                    timestamp: Date.now(),
+                    kasir: activeUser.name
                 };
 
                 if (fb === 'NO_DB' || fb === 'ERROR') {
@@ -231,7 +281,7 @@
 
             // Menangani klik tombol hapus
             const handleDeleteClick = (id) => {
-                if (isAdminLoggedIn) {
+                if (isAuthorized) {
                     executeDelete(id);
                 } else {
                     // Jika belum login, simpan ID yang mau dihapus dan buka modal login admin
@@ -244,7 +294,7 @@
 
             // Menangani klik kartu statistik yang terkunci
             const handleLockedCardClick = () => {
-                if (!isAdminLoggedIn) {
+                if (!isAuthorized) {
                     setPendingDeleteId(null); // Kosongkan action delete agar tidak salah eksekusi
                     setAdminPasswordInput("");
                     setAdminError("");
@@ -264,14 +314,15 @@
                 }
             };
 
-            // Login / Logout Admin
+            // Login / Logout Akses Admin Sementara (Untuk Kasir)
             const handleAdminLogin = () => {
-                if (adminPasswordInput === DELETE_PASSWORD) {
-                    setIsAdminLoggedIn(true);
+                const adminUser = APP_USERS.find(u => u.role === 'ADMIN');
+                if (adminPasswordInput === adminUser.pin) {
+                    setIsTempAdminUnlocked(true);
                     setShowAdminLoginModal(false);
                     setAdminPasswordInput("");
                     setAdminError("");
-                    showToast("Berhasil Login sebagai Admin", "success");
+                    showToast("Akses Admin Terbuka!", "success");
                     
                     // Jika login berasal dari klik tombol hapus, langsung eksekusi hapus
                     if (pendingDeleteId) {
@@ -279,14 +330,20 @@
                         setPendingDeleteId(null); // Reset setelah dieksekusi
                     }
                 } else {
-                    setAdminError("Password Admin Salah!");
+                    setAdminError("PIN Admin Salah!");
                 }
             };
 
-            const handleAdminLogout = () => {
-                setIsAdminLoggedIn(false);
+            const handleLockAdminAccess = () => {
+                setIsTempAdminUnlocked(false);
                 setPendingDeleteId(null);
-                showToast("Admin Logout", "success");
+                showToast("Akses Admin Dikunci", "success");
+            };
+            
+            const handleAppLogout = () => {
+                setActiveUser(null);
+                setIsTempAdminUnlocked(false);
+                showToast("Berhasil Logout", "success");
             };
 
             const cancelAdminLogin = () => {
@@ -302,14 +359,15 @@
                 }
 
                 const csvRows = [];
-                csvRows.push(["Tanggal", "Waktu", "Nama Pesanan", "Harga (Rp)"].join(','));
+                csvRows.push(["Tanggal", "Waktu", "Nama Pesanan", "Kasir", "Harga (Rp)"].join(','));
                 
                 orders.forEach(order => {
                     const dateObj = new Date(order.timestamp);
                     const dateStr = dateObj.toLocaleDateString('id-ID');
                     const timeStr = dateObj.toLocaleTimeString('id-ID');
                     const safeName = `"${order.name.replace(/"/g, '""')}"`;
-                    csvRows.push([dateStr, timeStr, safeName, order.price].join(','));
+                    const kasirName = order.kasir ? `"${order.kasir}"` : "Tidak Diketahui";
+                    csvRows.push([dateStr, timeStr, safeName, kasirName, order.price].join(','));
                 });
 
                 const csvContent = csvRows.join('\n');
@@ -362,13 +420,101 @@
                 return (
                     <div className="min-h-screen flex items-center justify-center bg-yellow-50">
                         <div className="flex flex-col items-center gap-3">
-                            <i data-lucide="loader-2" className="w-10 h-10 text-orange-500 animate-spin"></i>
+                            <Icon name="loader-2" className="w-10 h-10 text-orange-500 animate-spin" />
                             <div className="text-xl font-bold text-orange-700 animate-pulse">Menyiapkan Dapur...</div>
                         </div>
                     </div>
                 );
             }
 
+            // --- LAYAR LOGIN UTAMA ---
+            if (!activeUser) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center bg-yellow-50 px-4 font-sans">
+                        <div className="bg-white p-8 rounded-3xl shadow-xl max-w-sm w-full fade-in border-t-4 border-orange-500">
+                            <div className="flex justify-center mb-6">
+                                <div className="bg-gradient-to-r from-red-600 to-orange-500 text-white p-4 rounded-full shadow-lg">
+                                    <Icon name="utensils-crossed" className="w-10 h-10" />
+                                </div>
+                            </div>
+                            <h2 className="text-2xl font-extrabold text-center text-gray-800 mb-2">Kedai Bu Titin</h2>
+                            <p className="text-center text-sm text-gray-500 mb-8">Sistem Kasir Pintar. Silakan masuk.</p>
+
+                            {!selectedUserForLogin ? (
+                                <div className="space-y-3 fade-in">
+                                    <p className="text-center text-gray-600 font-semibold mb-4">Pilih Akun Anda:</p>
+                                    <div className="grid grid-cols-1 gap-3">
+                                        {APP_USERS.map((u, idx) => (
+                                            <button 
+                                                key={idx}
+                                                onClick={() => { setSelectedUserForLogin(u); setLoginError(""); setLoginPin(""); }}
+                                                className={`flex items-center gap-3 w-full p-4 rounded-xl border-2 transition-all hover:shadow-md ${u.role === 'ADMIN' ? 'border-red-200 hover:border-red-500 bg-red-50 text-red-700' : 'border-orange-200 hover:border-orange-500 bg-orange-50 text-orange-700'}`}
+                                            >
+                                                <Icon name={u.role === 'ADMIN' ? "shield-check" : "user"} className="w-6 h-6" />
+                                                <span className="font-bold text-lg">{u.name}</span>
+                                                <span className="ml-auto text-xs font-bold px-2 py-1 rounded bg-white/60">{u.role}</span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            ) : (
+                                <form onSubmit={handleAppLogin} className="fade-in">
+                                    <div className="flex items-center gap-3 mb-6 bg-gray-50 p-3 rounded-xl border border-gray-200">
+                                        <div className={`p-2 rounded-full ${selectedUserForLogin.role === 'ADMIN' ? 'bg-red-100 text-red-600' : 'bg-orange-100 text-orange-600'}`}>
+                                            <Icon name={selectedUserForLogin.role === 'ADMIN' ? "shield-check" : "user"} className="w-5 h-5" />
+                                        </div>
+                                        <div className="text-left">
+                                            <p className="text-xs text-gray-500 font-semibold">Login sebagai:</p>
+                                            <p className="font-bold text-gray-800">{selectedUserForLogin.name}</p>
+                                        </div>
+                                    </div>
+
+                                    <div className="relative mb-4">
+                                        <div className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400">
+                                            <Icon name="lock-keyhole" className="w-5 h-5" />
+                                        </div>
+                                        <input 
+                                            type="password" 
+                                            value={loginPin}
+                                            onChange={(e) => setLoginPin(e.target.value)}
+                                            placeholder="Masukkan PIN..."
+                                            className="w-full pl-12 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none transition text-center tracking-widest text-lg font-bold"
+                                            autoFocus
+                                        />
+                                    </div>
+                                    {loginError && <p className="text-red-500 text-sm font-semibold mt-2 mb-4 text-center animate-pulse">{loginError}</p>}
+                                    
+                                    <div className="flex gap-3 mt-6">
+                                        <button 
+                                            type="button"
+                                            onClick={() => { setSelectedUserForLogin(null); setLoginError(""); setLoginPin(""); }}
+                                            className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 rounded-xl transition"
+                                        >
+                                            Kembali
+                                        </button>
+                                        <button 
+                                            type="submit" 
+                                            className="flex-[2] bg-gradient-to-r from-red-500 to-orange-500 hover:from-red-600 hover:to-orange-600 text-white font-bold py-3 rounded-xl shadow-md hover:shadow-lg transition duration-200"
+                                        >
+                                            Masuk
+                                        </button>
+                                    </div>
+                                </form>
+                            )}
+                            
+                            {/* NOTIFIKASI TOAST UNTUK LOGIN SCREEN */}
+                            {toast.show && (
+                                <div className={`fixed bottom-6 right-6 flex items-center gap-3 text-white px-6 py-4 rounded-xl shadow-2xl animate-bounce z-50 ${toast.type === 'error' ? 'bg-red-600' : 'bg-green-600'}`}>
+                                    <Icon name={toast.type === 'error' ? 'alert-triangle' : 'check-circle'} className="w-6 h-6" />
+                                    <span className="font-bold">{toast.message}</span>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                );
+            }
+
+            // --- LAYAR APLIKASI UTAMA ---
             return (
                 <div className="min-h-screen bg-yellow-50 font-sans text-gray-800 pb-12">
                     {/* NAVBAR */}
@@ -376,7 +522,7 @@
                         <div className="max-w-7xl mx-auto flex justify-between items-center">
                             <div className="flex items-center gap-3">
                                 <div className="bg-white text-red-600 p-2 rounded-full shadow-md flex items-center justify-center">
-                                    <i data-lucide="utensils-crossed" className="w-6 h-6 sm:w-7 sm:h-7"></i>
+                                    <Icon name="utensils-crossed" className="w-6 h-6 sm:w-7 sm:h-7" />
                                 </div>
                                 <div>
                                     <h1 className="text-xl sm:text-2xl md:text-3xl font-extrabold tracking-tight">Kedai Bu Titin</h1>
@@ -384,29 +530,33 @@
                                 </div>
                             </div>
                             
-                            <div className="flex items-center gap-3">
+                            {/* Panel Kanan Navbar */}
+                            <div className="flex items-center gap-2 sm:gap-3">
                                 <div className="hidden md:flex items-center gap-2 text-sm bg-black/10 px-3 py-1.5 rounded-full backdrop-blur-sm mr-2">
-                                    <i data-lucide="calendar" className="w-4 h-4"></i>
-                                    {new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' })}
+                                    <Icon name="user" className="w-4 h-4" />
+                                    <span className="font-semibold">{activeUser.name}</span>
+                                    <span className="text-yellow-200 text-xs px-1.5 py-0.5 bg-black/20 rounded-md">{activeUser.role}</span>
                                 </div>
                                 
-                                {isAdminLoggedIn ? (
+                                {activeUser.role === 'KASIR' && isTempAdminUnlocked && (
                                     <button 
-                                        onClick={handleAdminLogout}
-                                        className="bg-white/20 hover:bg-white/30 border border-white/40 text-white text-sm font-semibold py-1.5 px-4 rounded-full transition flex items-center gap-2 backdrop-blur-sm"
+                                        onClick={handleLockAdminAccess}
+                                        className="bg-white/20 hover:bg-white/30 border border-white/40 text-white text-sm font-semibold py-1.5 px-3 sm:px-4 rounded-full transition flex items-center gap-2 backdrop-blur-sm"
+                                        title="Kunci Akses Admin"
                                     >
-                                        <i data-lucide="log-out" className="w-4 h-4"></i>
-                                        Keluar Admin
-                                    </button>
-                                ) : (
-                                    <button 
-                                        onClick={() => {setPendingDeleteId(null); setShowAdminLoginModal(true);}}
-                                        className="bg-white text-orange-600 hover:bg-orange-50 text-sm font-bold py-1.5 px-4 rounded-full shadow-md transition flex items-center gap-2"
-                                    >
-                                        <i data-lucide="lock" className="w-4 h-4"></i>
-                                        Login Admin
+                                        <Icon name="lock" className="w-4 h-4" />
+                                        <span className="hidden sm:inline">Kunci Akses</span>
                                     </button>
                                 )}
+
+                                <button 
+                                    onClick={handleAppLogout}
+                                    className="bg-white text-red-600 hover:bg-red-50 text-sm font-bold py-1.5 px-3 sm:px-4 rounded-full shadow-md transition flex items-center gap-2"
+                                    title="Keluar / Ganti Akun"
+                                >
+                                    <Icon name="log-out" className="w-4 h-4" />
+                                    <span className="hidden sm:inline">Logout</span>
+                                </button>
                             </div>
                         </div>
                     </nav>
@@ -415,10 +565,10 @@
                         
                         {/* KARTU STATISTIK */}
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                            {/* Hari Ini */}
+                            {/* Hari Ini - Selalu Terbuka */}
                             <div className="bg-white p-5 rounded-2xl shadow-sm border border-orange-100 flex items-center gap-4 hover:shadow-md transition-shadow fade-in">
                                 <div className="bg-orange-100 p-4 rounded-xl text-orange-600">
-                                    <i data-lucide="sun" className="w-8 h-8"></i>
+                                    <Icon name="sun" className="w-8 h-8" />
                                 </div>
                                 <div>
                                     <p className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Hari Ini</p>
@@ -430,21 +580,21 @@
                             {/* Bulan Ini */}
                             <div 
                                 onClick={handleLockedCardClick}
-                                className={`bg-white p-5 rounded-2xl shadow-sm border border-red-100 flex items-center gap-4 transition-all fade-in ${!isAdminLoggedIn ? 'cursor-pointer hover:bg-red-50 hover:shadow-md' : 'hover:shadow-md'}`} style={{animationDelay: '0.1s'}}>
-                                <div className={`p-4 rounded-xl ${isAdminLoggedIn ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-500'}`}>
-                                    <i data-lucide="calendar-days" className="w-8 h-8"></i>
+                                className={`bg-white p-5 rounded-2xl shadow-sm border border-red-100 flex items-center gap-4 transition-all fade-in ${!isAuthorized ? 'cursor-pointer hover:bg-red-50 hover:shadow-md' : 'hover:shadow-md'}`} style={{animationDelay: '0.1s'}}>
+                                <div className={`p-4 rounded-xl ${isAuthorized ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-500'}`}>
+                                    <Icon name="calendar-days" className="w-8 h-8" />
                                 </div>
                                 <div className="flex-1">
                                     <p className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Bulan Ini</p>
-                                    {isAdminLoggedIn ? (
+                                    {isAuthorized ? (
                                         <>
                                             <h3 className="text-2xl font-bold text-gray-800">{formatRupiah(stats.monthly.total)}</h3>
                                             <p className="text-xs font-medium text-red-600 bg-red-50 inline-block px-2 py-0.5 rounded-md mt-1">{stats.monthly.count} Pesanan</p>
                                         </>
                                     ) : (
                                         <p className="text-sm font-medium text-gray-400 mt-1 italic flex items-center gap-1">
-                                            <i data-lucide="lock" className="w-3 h-3"></i>
-                                            <span>Ketuk untuk login admin</span>
+                                            <Icon name="lock" className="w-3 h-3" />
+                                            <span>Ketuk untuk akses admin</span>
                                         </p>
                                     )}
                                 </div>
@@ -453,21 +603,21 @@
                             {/* Keseluruhan */}
                             <div 
                                 onClick={handleLockedCardClick}
-                                className={`p-5 rounded-2xl shadow-md flex items-center gap-4 transition-all fade-in ${!isAdminLoggedIn ? 'bg-white border border-gray-200 cursor-pointer hover:bg-gray-50 text-gray-800' : 'bg-gradient-to-br from-yellow-400 to-orange-500 text-white hover:shadow-lg'}`} style={{animationDelay: '0.2s'}}>
-                                <div className={`p-4 rounded-xl ${isAdminLoggedIn ? 'bg-white/20 backdrop-blur-sm' : 'bg-gray-100 text-gray-500'}`}>
-                                    <i data-lucide="wallet" className="w-8 h-8"></i>
+                                className={`p-5 rounded-2xl shadow-md flex items-center gap-4 transition-all fade-in ${!isAuthorized ? 'bg-white border border-gray-200 cursor-pointer hover:bg-gray-50 text-gray-800' : 'bg-gradient-to-br from-yellow-400 to-orange-500 text-white hover:shadow-lg'}`} style={{animationDelay: '0.2s'}}>
+                                <div className={`p-4 rounded-xl ${isAuthorized ? 'bg-white/20 backdrop-blur-sm' : 'bg-gray-100 text-gray-500'}`}>
+                                    <Icon name="wallet" className="w-8 h-8" />
                                 </div>
                                 <div className="flex-1">
-                                    <p className={`text-sm font-semibold uppercase tracking-wider ${isAdminLoggedIn ? 'text-yellow-100' : 'text-gray-500'}`}>Total Keseluruhan</p>
-                                    {isAdminLoggedIn ? (
+                                    <p className={`text-sm font-semibold uppercase tracking-wider ${isAuthorized ? 'text-yellow-100' : 'text-gray-500'}`}>Total Keseluruhan</p>
+                                    {isAuthorized ? (
                                         <>
                                             <h3 className="text-2xl font-bold">{formatRupiah(stats.overall.total)}</h3>
                                             <p className="text-xs font-medium bg-black/20 inline-block px-2 py-0.5 rounded-md mt-1">{stats.overall.count} Total Pesanan</p>
                                         </>
                                     ) : (
                                         <p className="text-sm font-medium text-gray-400 mt-1 italic flex items-center gap-1">
-                                            <i data-lucide="lock" className="w-3 h-3"></i>
-                                            <span>Ketuk untuk login admin</span>
+                                            <Icon name="lock" className="w-3 h-3" />
+                                            <span>Ketuk untuk akses admin</span>
                                         </p>
                                     )}
                                 </div>
@@ -480,7 +630,9 @@
                             <div className="w-full lg:w-1/3">
                                 <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 sticky top-28">
                                     <h2 className="text-xl font-bold mb-5 flex items-center gap-2 text-gray-800 border-b pb-3">
-                                        <div className="bg-orange-100 p-1.5 rounded-lg text-orange-600"><i data-lucide="plus" className="w-5 h-5"></i></div>
+                                        <div className="bg-orange-100 p-1.5 rounded-lg text-orange-600">
+                                            <Icon name="plus" className="w-5 h-5" />
+                                        </div>
                                         Input Pesanan Baru
                                     </h2>
                                     
@@ -514,14 +666,14 @@
                                             className={`w-full font-bold py-3.5 rounded-xl shadow-md transition duration-200 flex justify-center items-center gap-2 text-lg
                                             ${fb === 'ERROR' ? 'bg-gray-400 cursor-not-allowed text-gray-200' : 'bg-gradient-to-r from-red-500 to-orange-500 hover:from-red-600 hover:to-orange-600 text-white hover:shadow-lg'}`}
                                         >
-                                            <i data-lucide="save" className="w-5 h-5"></i>
+                                            <Icon name="save" className="w-5 h-5" />
                                             Simpan Pesanan
                                         </button>
                                     </form>
                                     
                                     {fb === 'ERROR' && (
                                         <div className="mt-4 p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg flex gap-2">
-                                            <i data-lucide="wifi-off" className="w-5 h-5 flex-shrink-0 mt-0.5"></i>
+                                            <Icon name="wifi-off" className="w-5 h-5 flex-shrink-0 mt-0.5" />
                                             <span>Sistem gagal terhubung ke database. Cek pengaturan Firebase Anda.</span>
                                         </div>
                                     )}
@@ -533,14 +685,16 @@
                                 <div className="bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col h-full">
                                     <div className="p-5 border-b border-gray-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-gray-50/50 rounded-t-2xl">
                                         <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
-                                            <div className="bg-red-100 p-1.5 rounded-lg text-red-600"><i data-lucide="list-ordered" className="w-5 h-5"></i></div>
+                                            <div className="bg-red-100 p-1.5 rounded-lg text-red-600">
+                                                <Icon name="list-ordered" className="w-5 h-5" />
+                                            </div>
                                             Riwayat Pesanan
                                         </h2>
                                         <button 
                                             onClick={exportToCSV}
                                             className="bg-green-600 hover:bg-green-700 text-white text-sm font-semibold py-2.5 px-5 rounded-xl shadow-sm hover:shadow transition flex items-center gap-2 w-full sm:w-auto justify-center"
                                         >
-                                            <i data-lucide="download" className="w-4 h-4"></i>
+                                            <Icon name="download" className="w-4 h-4" />
                                             Ekspor Data (Excel)
                                         </button>
                                     </div>
@@ -560,37 +714,68 @@
                                                     <tr>
                                                         <td colSpan="4" className="p-12 text-center text-gray-400">
                                                             <div className="flex flex-col items-center gap-3">
-                                                                <i data-lucide="inbox" className="w-12 h-12 text-gray-300"></i>
+                                                                <Icon name="inbox" className="w-12 h-12 text-gray-300" />
                                                                 <p>Belum ada data pesanan.</p>
                                                             </div>
                                                         </td>
                                                     </tr>
                                                 ) : (
-                                                    orders.map((order) => {
+                                                    orders.map((order, index) => {
                                                         const dateObj = new Date(order.timestamp);
+                                                        const currentDateString = dateObj.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+                                                        
+                                                        // Cek apakah ini item pertama, atau apakah tanggalnya beda dengan item sebelumnya
+                                                        let showDateSeparator = false;
+                                                        if (index === 0) {
+                                                            showDateSeparator = true;
+                                                        } else {
+                                                            const prevDateObj = new Date(orders[index - 1].timestamp);
+                                                            const prevDateString = prevDateObj.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+                                                            if (currentDateString !== prevDateString) {
+                                                                showDateSeparator = true;
+                                                            }
+                                                        }
+
                                                         return (
-                                                            <tr key={order.id} className="hover:bg-orange-50/50 transition-colors group">
-                                                                <td className="p-4 whitespace-nowrap">
-                                                                    <div className="text-sm font-bold text-gray-800">{dateObj.toLocaleTimeString('id-ID', {hour: '2-digit', minute:'2-digit'})}</div>
-                                                                    <div className="text-xs text-gray-500">{dateObj.toLocaleDateString('id-ID', {day:'numeric', month:'short', year:'numeric'})}</div>
-                                                                </td>
-                                                                <td className="p-4">
-                                                                    <span className="font-semibold text-gray-800 text-sm md:text-base">{order.name}</span>
-                                                                </td>
-                                                                <td className="p-4">
-                                                                    <span className="font-bold text-green-600 bg-green-50 px-2 py-1 rounded-md text-sm whitespace-nowrap">{formatRupiah(order.price)}</span>
-                                                                </td>
-                                                                <td className="p-4 text-center align-middle">
-                                                                    <button 
-                                                                        onClick={() => handleDeleteClick(order.id)}
-                                                                        className={`p-2 rounded-lg transition opacity-100 sm:opacity-0 group-hover:opacity-100 focus:opacity-100
-                                                                        ${isAdminLoggedIn ? 'text-red-500 hover:text-white hover:bg-red-500' : 'text-gray-400 hover:text-red-500 hover:bg-red-50'}`}
-                                                                        title={isAdminLoggedIn ? "Hapus Langsung (Admin)" : "Hapus (Perlu Login)"}
-                                                                    >
-                                                                        <i data-lucide="trash-2" className="w-5 h-5"></i>
-                                                                    </button>
-                                                                </td>
-                                                            </tr>
+                                                            <React.Fragment key={order.id}>
+                                                                {/* Baris Pemisah Tanggal */}
+                                                                {showDateSeparator && (
+                                                                    <tr className="bg-orange-100/50">
+                                                                        <td colSpan="4" className="px-4 py-2 text-center text-sm font-bold text-orange-800 border-y border-orange-200">
+                                                                            {currentDateString}
+                                                                        </td>
+                                                                    </tr>
+                                                                )}
+                                                                
+                                                                {/* Baris Data Pesanan */}
+                                                                <tr className="hover:bg-orange-50/50 transition-colors group">
+                                                                    <td className="p-4 whitespace-nowrap">
+                                                                        <div className="text-sm font-bold text-gray-800">{dateObj.toLocaleTimeString('id-ID', {hour: '2-digit', minute:'2-digit'})}</div>
+                                                                        <div className="text-xs text-gray-500">{dateObj.toLocaleDateString('id-ID', {day:'numeric', month:'short', year:'numeric'})}</div>
+                                                                    </td>
+                                                                    <td className="p-4">
+                                                                        <span className="font-semibold text-gray-800 text-sm md:text-base block">{order.name}</span>
+                                                                        {order.kasir && (
+                                                                            <div className="text-xs text-gray-400 mt-1 flex items-center gap-1">
+                                                                                <Icon name="user" className="w-3 h-3" /> {order.kasir}
+                                                                            </div>
+                                                                        )}
+                                                                    </td>
+                                                                    <td className="p-4">
+                                                                        <span className="font-bold text-green-600 bg-green-50 px-2 py-1 rounded-md text-sm whitespace-nowrap">{formatRupiah(order.price)}</span>
+                                                                    </td>
+                                                                    <td className="p-4 text-center align-middle">
+                                                                        <button 
+                                                                            onClick={() => handleDeleteClick(order.id)}
+                                                                            className={`p-2 rounded-lg transition opacity-100 sm:opacity-0 group-hover:opacity-100 focus:opacity-100
+                                                                            ${isAuthorized ? 'text-red-500 hover:text-white hover:bg-red-500' : 'text-gray-400 hover:text-red-500 hover:bg-red-50'}`}
+                                                                            title={isAuthorized ? "Hapus Langsung" : "Hapus (Perlu PIN Admin)"}
+                                                                        >
+                                                                            <Icon name="trash-2" className="w-5 h-5" />
+                                                                        </button>
+                                                                    </td>
+                                                                </tr>
+                                                            </React.Fragment>
                                                         );
                                                     })
                                                 )}
@@ -605,38 +790,36 @@
                     {/* NOTIFIKASI TOAST */}
                     {toast.show && (
                         <div className={`fixed bottom-6 right-6 flex items-center gap-3 text-white px-6 py-4 rounded-xl shadow-2xl animate-bounce z-50 ${toast.type === 'error' ? 'bg-red-600' : 'bg-green-600'}`}>
-                            {toast.type === 'error' ? (
-                                <i data-lucide="alert-triangle" className="w-6 h-6"></i>
-                            ) : (
-                                <i data-lucide="check-circle" className="w-6 h-6"></i>
-                            )}
+                            <Icon name={toast.type === 'error' ? 'alert-triangle' : 'check-circle'} className="w-6 h-6" />
                             <span className="font-bold">{toast.message}</span>
                         </div>
                     )}
 
-                    {/* MODAL LOGIN ADMIN UNTUK MEMBUKA SEMUA FITUR */}
+                    {/* MODAL LOGIN ADMIN UNTUK MEMBUKA SEMUA FITUR (Khusus Kasir) */}
                     {showAdminLoginModal && (
                         <div className="fixed inset-0 bg-gray-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 fade-in">
                             <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl transform scale-100 transition-transform">
                                 <div className="w-12 h-12 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                                    <i data-lucide="shield-check" className="text-orange-600 w-6 h-6"></i>
+                                    <Icon name="shield-check" className="text-orange-600 w-6 h-6" />
                                 </div>
                                 <h3 className="text-xl font-bold text-gray-800 text-center mb-2">
                                     Otorisasi Admin
                                 </h3>
                                 <p className="text-sm text-gray-500 text-center mb-6">
-                                    {pendingDeleteId ? "Login admin untuk menghapus pesanan ini dan membuka seluruh akses." : "Login admin untuk membuka laporan keuangan dan akses penghapusan."}
+                                    {pendingDeleteId ? "Minta Admin memasukkan PIN untuk menghapus pesanan ini." : "Minta Admin memasukkan PIN untuk membuka laporan keuangan."}
                                 </p>
                                 
                                 <div className="relative mb-2">
-                                    <i data-lucide="key" className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5"></i>
+                                    <div className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400">
+                                        <Icon name="key" className="w-5 h-5" />
+                                    </div>
                                     <input 
                                         type="password" 
                                         ref={passwordInputRef}
                                         value={adminPasswordInput}
                                         onChange={(e) => setAdminPasswordInput(e.target.value)}
-                                        placeholder="Masukkan kata sandi..."
-                                        className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none transition"
+                                        placeholder="Masukkan PIN Admin..."
+                                        className="w-full pl-12 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none transition"
                                         onKeyDown={(e) => { if(e.key === 'Enter') handleAdminLogin(); }}
                                     />
                                 </div>
@@ -654,7 +837,7 @@
                                         onClick={handleAdminLogin}
                                         className="flex-1 bg-orange-600 hover:bg-orange-700 text-white font-bold py-3 rounded-xl transition shadow-md shadow-orange-500/30"
                                     >
-                                        Login
+                                        Buka Akses
                                     </button>
                                 </div>
                             </div>
