@@ -25,6 +25,11 @@
         
         .fade-in { animation: fadeIn 0.3s ease-in; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        
+        /* Hide number input arrows */
+        input[type="number"]::-webkit-inner-spin-button, 
+        input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        input[type="number"] { -moz-appearance: textfield; }
     </style>
 </head>
 <body>
@@ -34,12 +39,12 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Mengekspos Firebase ke window agar bisa dibaca dengan aman oleh React
         window.FirebaseAPI = {
             initializeApp, getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken,
-            getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc
+            getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc, setDoc
         };
     </script>
 
@@ -48,11 +53,27 @@
 
         const DELETE_PASSWORD = "butitin123";
 
-        // Daftar Akun Pengguna (Bisa diganti nama & PIN-nya nanti)
+        // Daftar Akun Pengguna
         const APP_USERS = [
             { name: 'Admin', role: 'ADMIN', pin: 'butitin123' },
             { name: 'Siti', role: 'KASIR', pin: '1111' },
             { name: 'Budi', role: 'KASIR', pin: '2222' }
+        ];
+
+        // Daftar Menu Otomatis (Harga Tetap)
+        const MENU_FIXED = [
+            { id: 'f1', name: 'Ayam Geprek 10k', price: 10000, icon: 'drumstick' },
+            { id: 'f2', name: 'Ayam Geprek 12k', price: 12000, icon: 'drumstick' },
+            { id: 'f3', name: 'Ayam Bakar', price: 12000, icon: 'flame' },
+            { id: 'f4', name: 'Kue', price: 1000, icon: 'cake' },
+            { id: 'f5', name: 'Tiwul', price: 13000, icon: 'bowl' }
+        ];
+
+        // Daftar Menu Manual (Harga Input Sendiri)
+        const MENU_MANUAL = [
+            { id: 'm1', name: 'Prasmanan', icon: 'utensils' },
+            { id: 'm2', name: 'Kukusan', icon: 'soup' },
+            { id: 'm3', name: 'Minuman', icon: 'cup-soda' }
         ];
 
         // 🔴 PENTING UNTUK VERCEL: Masukkan konfigurasi Firebase Anda di bawah ini
@@ -69,47 +90,55 @@
         // Komponen Icon yang aman untuk React
         const Icon = ({ name, className }) => {
             const iconRef = useRef(null);
-
             useEffect(() => {
                 if (iconRef.current && window.lucide) {
-                    // Bersihkan ikon lama jika ada
                     iconRef.current.innerHTML = '';
-                    
-                    // Buat elemen <i> baru untuk diubah oleh Lucide
                     const i = document.createElement('i');
                     i.setAttribute('data-lucide', name);
                     if (className) i.className = className;
-                    
                     iconRef.current.appendChild(i);
                     window.lucide.createIcons({ root: iconRef.current });
                 }
             }, [name, className]);
-
             return <span ref={iconRef} className="inline-flex items-center justify-center"></span>;
         };
 
         function App() {
-            // Firebase State
+            // --- STATE DECLARATIONS ---
             const [fb, setFb] = useState(null);
             const [user, setUser] = useState(null);
             const [orders, setOrders] = useState([]);
             const [isLoading, setIsLoading] = useState(true);
 
-            // Form State
-            const [itemName, setItemName] = useState("");
-            const [itemPrice, setItemPrice] = useState("");
+            // Tab State
+            const [activeTab, setActiveTab] = useState('POS'); // 'POS', 'STOK', 'KEUANGAN'
 
-            // Global & Modal State
-            const [activeUser, setActiveUser] = useState(null); // Menyimpan data user yang sedang login
-            const [selectedUserForLogin, setSelectedUserForLogin] = useState(null); // User yang dipilih di layar login
-            const [isTempAdminUnlocked, setIsTempAdminUnlocked] = useState(false); // Untuk kasir yang buka akses admin
+            // Cart State
+            const [cart, setCart] = useState([]);
+            const [isQris, setIsQris] = useState(false);
+
+            // Manual Input Modal State
+            const [manualModal, setManualModal] = useState({ show: false, item: null });
+            const [manualPriceInput, setManualPriceInput] = useState("");
+
+            // Stock & Finance State (Today)
+            const [dailyStock, setDailyStock] = useState({});
+            const [dailyFinance, setDailyFinance] = useState({ uangLaci: 0 });
+
+            // Session State
+            const [activeSession, setActiveSession] = useState('SIANG'); // 'SIANG' atau 'MALAM'
+            const [showSessionModal, setShowSessionModal] = useState(false);
+            const [sessionSettings, setSessionSettings] = useState({ lastDate: getTodayDocId(), currentSession: 'SIANG' });
+
+            // Global & User State
+            const [activeUser, setActiveUser] = useState(null); 
+            const [selectedUserForLogin, setSelectedUserForLogin] = useState(null); 
+            const [isTempAdminUnlocked, setIsTempAdminUnlocked] = useState(false); 
             const [loginPin, setLoginPin] = useState("");
             const [loginError, setLoginError] = useState("");
             
-            // Pending Action State (menyimpan aksi yang tertunda karena butuh login admin)
+            // Admin Action State
             const [pendingDeleteId, setPendingDeleteId] = useState(null);
-            
-            // Admin Login Modal State
             const [showAdminLoginModal, setShowAdminLoginModal] = useState(false);
             const [adminPasswordInput, setAdminPasswordInput] = useState("");
             const [adminError, setAdminError] = useState("");
@@ -118,14 +147,20 @@
             // Toast Notifications
             const [toast, setToast] = useState({ show: false, message: "", type: "success" });
 
-            // 1. Initialize Firebase & Auth
+            // Helper: Format Date for Document ID
+            function getTodayDocId() {
+                const d = new Date();
+                return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            }
+
+            // --- 1. INITIALIZE FIREBASE & AUTH ---
             useEffect(() => {
                 const setupBackend = () => {
                     let configToUse = null;
                     if (typeof __firebase_config !== 'undefined' && __firebase_config) {
-                        configToUse = JSON.parse(__firebase_config); // Canvas env
+                        configToUse = JSON.parse(__firebase_config); 
                     } else if (MY_FIREBASE_CONFIG.apiKey) {
-                        configToUse = MY_FIREBASE_CONFIG; // Vercel env
+                        configToUse = MY_FIREBASE_CONFIG; 
                     }
 
                     if (configToUse) {
@@ -145,7 +180,8 @@
                                         onSnapshot: fbAPI.onSnapshot, 
                                         addDoc: fbAPI.addDoc, 
                                         deleteDoc: fbAPI.deleteDoc, 
-                                        doc: fbAPI.doc 
+                                        doc: fbAPI.doc,
+                                        setDoc: fbAPI.setDoc
                                     });
 
                                     if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -160,18 +196,12 @@
                                     });
                                 } catch (error) {
                                     console.error("Firebase Init Error:", error);
-                                    if (error.code === 'auth/operation-not-allowed') {
-                                        showToast("GAGAL: Fitur 'Anonymous' Login belum aktif di Firebase!", "error");
-                                    } else {
-                                        showToast("Gagal terhubung ke database.", "error");
-                                    }
                                     setFb('ERROR');
                                     setIsLoading(false);
                                 }
                             }
                         }, 100);
                     } else {
-                        console.log("No Firebase Config detected.");
                         setFb('NO_DB');
                         setIsLoading(false);
                     }
@@ -179,59 +209,87 @@
                 setupBackend();
             }, []);
 
-            // 2. Fetch Data (Realtime listeners)
+            // --- 2. FETCH DATA (ORDERS, STOCK, FINANCE, SETTINGS) ---
             useEffect(() => {
-                if (fb === 'NO_DB' || fb === 'ERROR') return; 
-                if (!user || !fb) return;
+                if (fb === 'NO_DB' || fb === 'ERROR' || !user || !fb) return;
 
-                // Path public data
-                const collectionRef = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'orders_kedai_titin');
-                
-                const unsubscribe = fb.onSnapshot(collectionRef, 
+                const todayId = getTodayDocId();
+
+                // Fetch Settings (Session)
+                // Firestore document paths must have an even number of segments
+                const settingsRef = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'settings', 'app_config');
+                const unsubSettings = fb.onSnapshot(settingsRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        const data = docSnap.data();
+                        if (data.lastDate !== todayId) {
+                            // Reset to SIANG if it's a new day
+                            const newSettings = { lastDate: todayId, currentSession: 'SIANG' };
+                            setSessionSettings(newSettings);
+                            setActiveSession('SIANG');
+                            fb.setDoc(settingsRef, newSettings, { merge: true });
+                        } else {
+                            setSessionSettings(data);
+                            setActiveSession(data.currentSession || 'SIANG');
+                        }
+                    } else {
+                        const newSettings = { lastDate: todayId, currentSession: 'SIANG' };
+                        setSessionSettings(newSettings);
+                        setActiveSession('SIANG');
+                        fb.setDoc(settingsRef, newSettings, { merge: true });
+                    }
+                });
+
+                // Fetch Orders
+                const ordersRef = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'orders_kedai_titin');
+                const unsubOrders = fb.onSnapshot(ordersRef, 
                     (snapshot) => {
                         const data = [];
-                        snapshot.forEach((doc) => {
-                            data.push({ id: doc.id, ...doc.data() });
-                        });
-                        
+                        snapshot.forEach((doc) => data.push({ id: doc.id, ...doc.data() }));
                         data.sort((a, b) => b.timestamp - a.timestamp);
                         setOrders(data);
                         setIsLoading(false);
                     },
-                    (error) => {
-                        console.error("Firestore Listen Error:", error);
-                        showToast("Koneksi data terputus.", "error");
-                        setIsLoading(false);
-                    }
+                    (error) => { console.error(error); setIsLoading(false); }
                 );
 
-                return () => unsubscribe();
+                // Fetch Today's Stock
+                const stockRef = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'stock_kedai_titin', todayId);
+                const unsubStock = fb.onSnapshot(stockRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        setDailyStock(docSnap.data());
+                    } else {
+                        setDailyStock({});
+                    }
+                }, (error) => console.error(error));
+
+                // Fetch Today's Finance
+                const financeRef = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'finance_kedai_titin', todayId);
+                const unsubFinance = fb.onSnapshot(financeRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        setDailyFinance(docSnap.data());
+                    } else {
+                        setDailyFinance({ uangLaci: 0 });
+                    }
+                }, (error) => console.error(error));
+
+                return () => { unsubOrders(); unsubStock(); unsubFinance(); unsubSettings(); };
             }, [user, fb]);
 
-            // Fokus ke input password saat modal admin terbuka
+            // Auto-focus password input in modal
             useEffect(() => {
-                if(showAdminLoginModal && passwordInputRef.current) {
-                    passwordInputRef.current.focus();
-                }
+                if(showAdminLoginModal && passwordInputRef.current) passwordInputRef.current.focus();
             }, [showAdminLoginModal]);
 
-            // Status Otorisasi (Apakah Admin atau Kasir yang sudah buka akses admin)
+            // Fokus input harga manual
+            useEffect(() => {
+                if(manualModal.show) document.getElementById('manualPriceInput')?.focus();
+            }, [manualModal.show]);
+
+            // --- COMPUTED DATA ---
             const isAuthorized = activeUser?.role === 'ADMIN' || isTempAdminUnlocked;
 
-            // --- Handlers & Actions ---
-
-            const handleAppLogin = (e) => {
-                e.preventDefault();
-                if (selectedUserForLogin && selectedUserForLogin.pin === loginPin) {
-                    setActiveUser(selectedUserForLogin);
-                    setLoginPin("");
-                    setLoginError("");
-                    setIsTempAdminUnlocked(false);
-                    setSelectedUserForLogin(null); // Reset form login
-                    showToast(`Selamat datang, ${selectedUserForLogin.name}!`, "success");
-                } else {
-                    setLoginError("PIN salah!");
-                }
+            const formatRupiah = (number) => {
+                return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(number);
             };
 
             const showToast = (message, type = "success") => {
@@ -239,152 +297,7 @@
                 setTimeout(() => setToast({ show: false, message: "", type: "success" }), 3500);
             };
 
-            const formatRupiah = (number) => {
-                return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(number);
-            };
-
-            // Tambah Pesanan
-            const handleSubmit = async (e) => {
-                e.preventDefault();
-                if (!itemName.trim() || !itemPrice) {
-                    showToast("Nama pesanan dan harga wajib diisi!", "error");
-                    return;
-                }
-
-                const newOrder = {
-                    name: itemName.trim(),
-                    price: Number(itemPrice),
-                    timestamp: Date.now(),
-                    kasir: activeUser.name
-                };
-
-                if (fb === 'NO_DB' || fb === 'ERROR') {
-                    showToast("Tidak terhubung ke database. Gagal menyimpan.", "error");
-                    return;
-                }
-
-                if (!user || !fb) return;
-
-                try {
-                    const collectionRef = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'orders_kedai_titin');
-                    await fb.addDoc(collectionRef, newOrder);
-                    
-                    setItemName("");
-                    setItemPrice("");
-                    showToast("Pesanan ditambahkan!", "success");
-                    document.getElementById('itemNameInput').focus();
-                } catch (error) {
-                    console.error("Add Error:", error);
-                    showToast("Gagal menyimpan pesanan.", "error");
-                }
-            };
-
-            // Menangani klik tombol hapus
-            const handleDeleteClick = (id) => {
-                if (isAuthorized) {
-                    executeDelete(id);
-                } else {
-                    // Jika belum login, simpan ID yang mau dihapus dan buka modal login admin
-                    setPendingDeleteId(id);
-                    setAdminPasswordInput("");
-                    setAdminError("");
-                    setShowAdminLoginModal(true);
-                }
-            };
-
-            // Menangani klik kartu statistik yang terkunci
-            const handleLockedCardClick = () => {
-                if (!isAuthorized) {
-                    setPendingDeleteId(null); // Kosongkan action delete agar tidak salah eksekusi
-                    setAdminPasswordInput("");
-                    setAdminError("");
-                    setShowAdminLoginModal(true);
-                }
-            };
-
-            const executeDelete = async (id) => {
-                if (!user || !fb || fb === 'NO_DB' || fb === 'ERROR') return;
-                try {
-                    const docRef = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'orders_kedai_titin', id);
-                    await fb.deleteDoc(docRef);
-                    showToast("Data pesanan dihapus.", "success");
-                } catch (error) {
-                    console.error("Delete Error:", error);
-                    showToast("Gagal menghapus data.", "error");
-                }
-            };
-
-            // Login / Logout Akses Admin Sementara (Untuk Kasir)
-            const handleAdminLogin = () => {
-                const adminUser = APP_USERS.find(u => u.role === 'ADMIN');
-                if (adminPasswordInput === adminUser.pin) {
-                    setIsTempAdminUnlocked(true);
-                    setShowAdminLoginModal(false);
-                    setAdminPasswordInput("");
-                    setAdminError("");
-                    showToast("Akses Admin Terbuka!", "success");
-                    
-                    // Jika login berasal dari klik tombol hapus, langsung eksekusi hapus
-                    if (pendingDeleteId) {
-                        executeDelete(pendingDeleteId);
-                        setPendingDeleteId(null); // Reset setelah dieksekusi
-                    }
-                } else {
-                    setAdminError("PIN Admin Salah!");
-                }
-            };
-
-            const handleLockAdminAccess = () => {
-                setIsTempAdminUnlocked(false);
-                setPendingDeleteId(null);
-                showToast("Akses Admin Dikunci", "success");
-            };
-            
-            const handleAppLogout = () => {
-                setActiveUser(null);
-                setIsTempAdminUnlocked(false);
-                showToast("Berhasil Logout", "success");
-            };
-
-            const cancelAdminLogin = () => {
-                setShowAdminLoginModal(false);
-                setPendingDeleteId(null);
-            };
-
-            // Ekspor CSV
-            const exportToCSV = () => {
-                if (orders.length === 0) {
-                    showToast("Belum ada data untuk diekspor.", "error");
-                    return;
-                }
-
-                const csvRows = [];
-                csvRows.push(["Tanggal", "Waktu", "Nama Pesanan", "Kasir", "Harga (Rp)"].join(','));
-                
-                orders.forEach(order => {
-                    const dateObj = new Date(order.timestamp);
-                    const dateStr = dateObj.toLocaleDateString('id-ID');
-                    const timeStr = dateObj.toLocaleTimeString('id-ID');
-                    const safeName = `"${order.name.replace(/"/g, '""')}"`;
-                    const kasirName = order.kasir ? `"${order.kasir}"` : "Tidak Diketahui";
-                    csvRows.push([dateStr, timeStr, safeName, kasirName, order.price].join(','));
-                });
-
-                const csvContent = csvRows.join('\n');
-                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-                const url = URL.createObjectURL(blob);
-                
-                const link = document.createElement("a");
-                link.setAttribute("href", url);
-                link.setAttribute("download", `Laporan_Kedai_Bu_Titin_${new Date().toLocaleDateString('id-ID')}.csv`);
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                
-                showToast("Laporan berhasil diunduh!", "success");
-            };
-
-            // Kalkulasi Statistik
+            // Order Stats
             const stats = useMemo(() => {
                 const now = new Date();
                 const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -409,12 +322,287 @@
                     }
                 });
 
-                return {
-                    daily: { total: dailyTotal, count: dailyCount },
-                    monthly: { total: monthlyTotal, count: monthlyCount },
-                    overall: { total: overallTotal, count: overallCount }
-                };
+                return { daily: { total: dailyTotal, count: dailyCount }, monthly: { total: monthlyTotal, count: monthlyCount }, overall: { total: overallTotal, count: overallCount } };
             }, [orders]);
+
+            // Calculated Sold Items Today
+            const soldItemsToday = useMemo(() => {
+                const counts = {};
+                const todayStart = new Date();
+                todayStart.setHours(0,0,0,0);
+                const todayTime = todayStart.getTime();
+
+                orders.filter(o => o.timestamp >= todayTime).forEach(order => {
+                    if (order.items && Array.isArray(order.items)) {
+                        order.items.forEach(item => {
+                            counts[item.name] = (counts[item.name] || 0) + item.qty;
+                        });
+                    } else if (order.name) {
+                        // Fallback for old data format
+                        const parts = order.name.split(', ');
+                        parts.forEach(part => {
+                            const match = part.match(/(.+) x(\d+)/);
+                            if (match) {
+                                const name = match[1].trim();
+                                const qty = parseInt(match[2]);
+                                counts[name] = (counts[name] || 0) + qty;
+                            }
+                        });
+                    }
+                });
+                return counts;
+            }, [orders]);
+
+            // Calculated Finance Today (Per Session)
+            const financeStats = useMemo(() => {
+                const todayStart = new Date();
+                todayStart.setHours(0,0,0,0);
+                const todayTime = todayStart.getTime();
+
+                let totalIncomeSiang = 0;
+                let totalIncomeMalam = 0;
+                let totalQrisSiang = 0;
+                let totalQrisMalam = 0;
+                let totalCashExpectedSiang = 0;
+                let totalCashExpectedMalam = 0;
+
+                orders.filter(o => o.timestamp >= todayTime).forEach(o => {
+                    if (o.session === 'SIANG' || !o.session) {
+                        totalIncomeSiang += o.price;
+                        if (o.isQris) totalQrisSiang += o.price;
+                        else totalCashExpectedSiang += o.price;
+                    } else if (o.session === 'MALAM') {
+                        totalIncomeMalam += o.price;
+                        if (o.isQris) totalQrisMalam += o.price;
+                        else totalCashExpectedMalam += o.price;
+                    }
+                });
+
+                const selisihSiang = (dailyFinance.uangLaciSiang || 0) - totalCashExpectedSiang;
+                const selisihMalam = (dailyFinance.uangLaciMalam || 0) - totalCashExpectedMalam;
+
+                return { 
+                    siang: { totalIncome: totalIncomeSiang, totalQris: totalQrisSiang, totalCashExpected: totalCashExpectedSiang, selisih: selisihSiang },
+                    malam: { totalIncome: totalIncomeMalam, totalQris: totalQrisMalam, totalCashExpected: totalCashExpectedMalam, selisih: selisihMalam }
+                };
+            }, [orders, dailyFinance.uangLaciSiang, dailyFinance.uangLaciMalam]);
+
+            const currentCartTotal = useMemo(() => cart.reduce((sum, item) => sum + (item.price * item.qty), 0), [cart]);
+
+
+            // --- ACTIONS ---
+
+            const handleAppLogin = (e) => {
+                e.preventDefault();
+                if (selectedUserForLogin && selectedUserForLogin.pin === loginPin) {
+                    setActiveUser(selectedUserForLogin);
+                    setLoginPin(""); setLoginError(""); setIsTempAdminUnlocked(false); setSelectedUserForLogin(null);
+                    showToast(`Selamat datang, ${selectedUserForLogin.name}!`, "success");
+                } else {
+                    setLoginError("PIN salah!");
+                }
+            };
+
+            const handleAppLogout = () => {
+                setActiveUser(null); setIsTempAdminUnlocked(false); setCart([]); setActiveTab('POS');
+                showToast("Berhasil Logout", "success");
+            };
+
+            const switchSession = async () => {
+                if (fb === 'NO_DB' || !fb || !user) return;
+
+                const nextSession = activeSession === 'SIANG' ? 'MALAM' : 'SIANG';
+
+                try {
+                    const settingsRef = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'settings', 'app_config');
+                    await fb.setDoc(settingsRef, { currentSession: nextSession }, { merge: true });
+                    setShowSessionModal(false);
+                    showToast(`Berhasil pindah ke Sesi ${nextSession === 'SIANG' ? 'Siang' : 'Malam'}!`, "success");
+                } catch (error) {
+                    showToast("Gagal memindahkan sesi.", "error");
+                }
+            };
+
+            // Cart Actions
+            const addFixedToCart = (item) => {
+                setCart(prev => {
+                    const existing = prev.find(i => i.id === item.id && i.price === item.price);
+                    if (existing) return prev.map(i => i === existing ? {...i, qty: i.qty + 1} : i);
+                    return [...prev, { ...item, qty: 1, cartId: Date.now().toString() }];
+                });
+            };
+
+            const submitManualPrice = (e) => {
+                e.preventDefault();
+                const price = Number(manualPriceInput);
+                if (price <= 0) { showToast("Harga tidak valid", "error"); return; }
+                
+                setCart(prev => {
+                    const existing = prev.find(i => i.id === manualModal.item.id && i.price === price);
+                    if (existing) return prev.map(i => i === existing ? {...i, qty: i.qty + 1} : i);
+                    return [...prev, { ...manualModal.item, price: price, qty: 1, cartId: Date.now().toString() }];
+                });
+                
+                setManualModal({ show: false, item: null });
+                setManualPriceInput("");
+            };
+
+            const updateCartQty = (cartId, delta) => {
+                setCart(prev => prev.map(i => {
+                    if (i.cartId === cartId) {
+                        const newQty = i.qty + delta;
+                        return newQty > 0 ? { ...i, qty: newQty } : null;
+                    }
+                    return i;
+                }).filter(Boolean));
+            };
+
+            const clearCart = () => {
+                setCart([]);
+            };
+
+            // Checkout
+            const handleCheckout = async () => {
+                if (cart.length === 0) return;
+                if (fb === 'NO_DB' || fb === 'ERROR') { showToast("Gagal: Database tidak terhubung", "error"); return; }
+                if (!user || !fb) return;
+
+                const itemsStr = cart.map(i => `${i.name} x${i.qty}`).join(', ');
+                
+                const newOrder = {
+                    name: itemsStr,
+                    items: cart.map(i => ({ id: i.id, name: i.name, price: i.price, qty: i.qty })),
+                    price: currentCartTotal,
+                    timestamp: Date.now(),
+                    kasir: activeUser.name,
+                    isQris: isQris,
+                    session: activeSession
+                };
+
+                try {
+                    const collectionRef = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'orders_kedai_titin');
+                    await fb.addDoc(collectionRef, newOrder);
+                    setCart([]);
+                    setIsQris(false);
+                    showToast("Pesanan berhasil disimpan!", "success");
+                } catch (error) {
+                    console.error(error); showToast("Gagal menyimpan pesanan.", "error");
+                }
+            };
+
+            // Delete Logic
+            const handleDeleteClick = (id) => {
+                if (isAuthorized) executeDelete(id);
+                else { setPendingDeleteId(id); setAdminPasswordInput(""); setAdminError(""); setShowAdminLoginModal(true); }
+            };
+
+            const executeDelete = async (id) => {
+                if (!user || !fb || fb === 'NO_DB' || fb === 'ERROR') return;
+                try {
+                    const docRef = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'orders_kedai_titin', id);
+                    await fb.deleteDoc(docRef);
+                    showToast("Data pesanan dihapus.", "success");
+                } catch (error) { showToast("Gagal menghapus data.", "error"); }
+            };
+
+            const handleLockedCardClick = () => {
+                if (!isAuthorized) {
+                    setPendingDeleteId(null);
+                    setAdminPasswordInput("");
+                    setAdminError("");
+                    setShowAdminLoginModal(true);
+                }
+            };
+
+            // Admin Access
+            const handleAdminLogin = () => {
+                const adminUser = APP_USERS.find(u => u.role === 'ADMIN');
+                if (adminPasswordInput === adminUser.pin) {
+                    setIsTempAdminUnlocked(true); setShowAdminLoginModal(false); setAdminPasswordInput(""); setAdminError("");
+                    showToast("Akses Admin Terbuka!", "success");
+                    if (pendingDeleteId) { executeDelete(pendingDeleteId); setPendingDeleteId(null); }
+                } else { setAdminError("PIN Admin Salah!"); }
+            };
+
+            const handleLockAdminAccess = () => {
+                setIsTempAdminUnlocked(false);
+                setPendingDeleteId(null);
+                showToast("Akses Admin Dikunci", "success");
+            };
+
+            const cancelAdminLogin = () => {
+                setShowAdminLoginModal(false);
+                setPendingDeleteId(null);
+            };
+
+            // Ekspor CSV
+            const exportToCSV = () => {
+                if (orders.length === 0) {
+                    showToast("Belum ada data untuk diekspor.", "error");
+                    return;
+                }
+
+                const csvRows = [];
+                csvRows.push(["Tanggal", "Waktu", "Rincian Pesanan", "Sesi", "Kasir", "Total Harga (Rp)"].join(','));
+                
+                orders.forEach(order => {
+                    const dateObj = new Date(order.timestamp);
+                    const dateStr = dateObj.toLocaleDateString('id-ID');
+                    const timeStr = dateObj.toLocaleTimeString('id-ID');
+                    const safeName = `"${order.name.replace(/"/g, '""')}"`;
+                    const sessionName = order.session || "SIANG";
+                    const kasirName = order.kasir ? `"${order.kasir}"` : "Tidak Diketahui";
+                    csvRows.push([dateStr, timeStr, safeName, sessionName, kasirName, order.price].join(','));
+                });
+
+                const csvContent = csvRows.join('\n');
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                
+                const link = document.createElement("a");
+                link.setAttribute("href", url);
+                link.setAttribute("download", `Laporan_Kedai_Bu_Titin_${new Date().toLocaleDateString('id-ID')}.csv`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                
+                showToast("Laporan berhasil diunduh!", "success");
+            };
+
+            // Stock & Finance Updates
+            const handleUpdateStock = (itemName, field, value) => {
+                const val = Number(value) || 0;
+                setDailyStock(prev => ({
+                    ...prev,
+                    [itemName]: { ...(prev[itemName] || {awal: 0, tambah: 0, fisik: 0}), [field]: val }
+                }));
+            };
+
+            const saveStockToDb = async () => {
+                if (!user || !fb || fb === 'NO_DB') return;
+                try {
+                    const stockRef = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'stock_kedai_titin', getTodayDocId());
+                    await fb.setDoc(stockRef, dailyStock, { merge: true });
+                    showToast("Data Stok Disimpan", "success");
+                } catch (error) { showToast("Gagal menyimpan stok", "error"); }
+            };
+
+            const saveFinanceToDb = async (sessionType) => {
+                if (!user || !fb || fb === 'NO_DB') return;
+                try {
+                    const financeRef = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'finance_kedai_titin', getTodayDocId());
+                    
+                    const updateData = sessionType === 'SIANG' 
+                        ? { uangLaciSiang: dailyFinance.uangLaciSiang } 
+                        : { uangLaciMalam: dailyFinance.uangLaciMalam };
+
+                    await fb.setDoc(financeRef, updateData, { merge: true });
+                    showToast("Data Keuangan Disimpan", "success");
+                } catch (error) { showToast("Gagal menyimpan keuangan", "error"); }
+            };
+
+
+            // --- RENDERERS ---
 
             if (isLoading) {
                 return (
@@ -427,7 +615,7 @@
                 );
             }
 
-            // --- LAYAR LOGIN UTAMA ---
+            // LOGIN SCREEN
             if (!activeUser) {
                 return (
                     <div className="min-h-screen flex items-center justify-center bg-yellow-50 px-4 font-sans">
@@ -485,362 +673,545 @@
                                     {loginError && <p className="text-red-500 text-sm font-semibold mt-2 mb-4 text-center animate-pulse">{loginError}</p>}
                                     
                                     <div className="flex gap-3 mt-6">
-                                        <button 
-                                            type="button"
-                                            onClick={() => { setSelectedUserForLogin(null); setLoginError(""); setLoginPin(""); }}
-                                            className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 rounded-xl transition"
-                                        >
-                                            Kembali
-                                        </button>
-                                        <button 
-                                            type="submit" 
-                                            className="flex-[2] bg-gradient-to-r from-red-500 to-orange-500 hover:from-red-600 hover:to-orange-600 text-white font-bold py-3 rounded-xl shadow-md hover:shadow-lg transition duration-200"
-                                        >
-                                            Masuk
-                                        </button>
+                                        <button type="button" onClick={() => setSelectedUserForLogin(null)} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 rounded-xl transition">Kembali</button>
+                                        <button type="submit" className="flex-[2] bg-gradient-to-r from-red-500 to-orange-500 hover:from-red-600 hover:to-orange-600 text-white font-bold py-3 rounded-xl shadow-md hover:shadow-lg transition duration-200">Masuk</button>
                                     </div>
                                 </form>
-                            )}
-                            
-                            {/* NOTIFIKASI TOAST UNTUK LOGIN SCREEN */}
-                            {toast.show && (
-                                <div className={`fixed bottom-6 right-6 flex items-center gap-3 text-white px-6 py-4 rounded-xl shadow-2xl animate-bounce z-50 ${toast.type === 'error' ? 'bg-red-600' : 'bg-green-600'}`}>
-                                    <Icon name={toast.type === 'error' ? 'alert-triangle' : 'check-circle'} className="w-6 h-6" />
-                                    <span className="font-bold">{toast.message}</span>
-                                </div>
                             )}
                         </div>
                     </div>
                 );
             }
 
-            // --- LAYAR APLIKASI UTAMA ---
+            // MAIN APP
             return (
-                <div className="min-h-screen bg-yellow-50 font-sans text-gray-800 pb-12">
+                <div className="min-h-screen bg-yellow-50 font-sans text-gray-800 pb-12 flex flex-col">
                     {/* NAVBAR */}
-                    <nav className="bg-gradient-to-r from-red-600 via-orange-500 to-yellow-500 text-white shadow-lg py-4 px-4 sm:px-6 md:px-8 sticky top-0 z-40">
-                        <div className="max-w-7xl mx-auto flex justify-between items-center">
-                            <div className="flex items-center gap-3">
-                                <div className="bg-white text-red-600 p-2 rounded-full shadow-md flex items-center justify-center">
-                                    <Icon name="utensils-crossed" className="w-6 h-6 sm:w-7 sm:h-7" />
+                    <nav className="bg-gradient-to-r from-red-600 via-orange-500 to-yellow-500 text-white shadow-lg py-3 px-4 sm:px-6 md:px-8 sticky top-0 z-40">
+                        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-3">
+                            <div className="flex items-center gap-3 w-full md:w-auto justify-between">
+                                <div className="flex items-center gap-3">
+                                    <div className="bg-white text-red-600 p-2 rounded-full shadow-md flex items-center justify-center">
+                                        <Icon name="utensils-crossed" className="w-6 h-6 sm:w-7 sm:h-7" />
+                                    </div>
+                                    <div>
+                                        <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight">Kedai Bu Titin</h1>
+                                        <div className="flex items-center gap-2 mt-0.5">
+                                            <span className={`text-[10px] sm:text-xs px-2 py-0.5 rounded-md font-bold ${activeSession === 'SIANG' ? 'bg-yellow-200 text-orange-800' : 'bg-indigo-700 text-indigo-100'}`}>
+                                                <Icon name={activeSession === 'SIANG' ? 'sun' : 'moon'} className="w-3 h-3 inline mr-1" />
+                                                Sesi {activeSession === 'SIANG' ? 'Siang' : 'Malam'}
+                                            </span>
+                                            <button onClick={() => setShowSessionModal(true)} className="text-[10px] sm:text-xs bg-white/20 hover:bg-white/30 px-2 py-0.5 rounded-md font-medium transition flex items-center">
+                                                Pindah Sesi <Icon name="arrow-right" className="w-3 h-3 ml-1" />
+                                            </button>
+                                        </div>
+                                    </div>
                                 </div>
-                                <div>
-                                    <h1 className="text-xl sm:text-2xl md:text-3xl font-extrabold tracking-tight">Kedai Bu Titin</h1>
-                                    <p className="text-yellow-100 text-xs sm:text-sm opacity-90 font-medium">Sistem Kasir Pintar</p>
+                                <div className="flex md:hidden items-center gap-2">
+                                    <span className="font-semibold text-sm">{activeUser.name}</span>
                                 </div>
                             </div>
                             
-                            {/* Panel Kanan Navbar */}
-                            <div className="flex items-center gap-2 sm:gap-3">
-                                <div className="hidden md:flex items-center gap-2 text-sm bg-black/10 px-3 py-1.5 rounded-full backdrop-blur-sm mr-2">
-                                    <Icon name="user" className="w-4 h-4" />
-                                    <span className="font-semibold">{activeUser.name}</span>
-                                    <span className="text-yellow-200 text-xs px-1.5 py-0.5 bg-black/20 rounded-md">{activeUser.role}</span>
-                                </div>
-                                
-                                {activeUser.role === 'KASIR' && isTempAdminUnlocked && (
-                                    <button 
-                                        onClick={handleLockAdminAccess}
-                                        className="bg-white/20 hover:bg-white/30 border border-white/40 text-white text-sm font-semibold py-1.5 px-3 sm:px-4 rounded-full transition flex items-center gap-2 backdrop-blur-sm"
-                                        title="Kunci Akses Admin"
-                                    >
-                                        <Icon name="lock" className="w-4 h-4" />
-                                        <span className="hidden sm:inline">Kunci Akses</span>
+                            {/* Tabs & User Actions */}
+                            <div className="flex flex-wrap items-center justify-between md:justify-end w-full md:w-auto gap-4 overflow-x-auto pb-1 md:pb-0">
+                                <div className="flex bg-black/20 p-1 rounded-xl">
+                                    <button onClick={() => setActiveTab('POS')} className={`px-4 py-1.5 rounded-lg text-sm font-bold transition whitespace-nowrap ${activeTab === 'POS' ? 'bg-white text-orange-600 shadow' : 'text-white hover:bg-white/10'}`}>Kasir</button>
+                                    <button onClick={() => setActiveTab('STOK')} className={`px-4 py-1.5 rounded-lg text-sm font-bold transition flex items-center gap-1 whitespace-nowrap ${activeTab === 'STOK' ? 'bg-white text-orange-600 shadow' : 'text-white hover:bg-white/10'}`}>
+                                        Stok
                                     </button>
-                                )}
+                                    <button onClick={() => setActiveTab('KEUANGAN')} className={`px-4 py-1.5 rounded-lg text-sm font-bold transition flex items-center gap-1 whitespace-nowrap ${activeTab === 'KEUANGAN' ? 'bg-white text-orange-600 shadow' : 'text-white hover:bg-white/10'}`}>
+                                        Keuangan
+                                    </button>
+                                </div>
 
-                                <button 
-                                    onClick={handleAppLogout}
-                                    className="bg-white text-red-600 hover:bg-red-50 text-sm font-bold py-1.5 px-3 sm:px-4 rounded-full shadow-md transition flex items-center gap-2"
-                                    title="Keluar / Ganti Akun"
-                                >
-                                    <Icon name="log-out" className="w-4 h-4" />
-                                    <span className="hidden sm:inline">Logout</span>
-                                </button>
+                                <div className="hidden md:flex items-center gap-2">
+                                    <div className="flex items-center gap-2 text-sm bg-black/10 px-3 py-1.5 rounded-full backdrop-blur-sm mr-2">
+                                        <Icon name="user" className="w-4 h-4" />
+                                        <span className="font-semibold">{activeUser.name}</span>
+                                        <span className="text-yellow-200 text-xs px-1.5 py-0.5 bg-black/20 rounded-md">{activeUser.role}</span>
+                                    </div>
+                                    {activeUser.role === 'KASIR' && isTempAdminUnlocked && (
+                                        <button onClick={handleLockAdminAccess} className="bg-white/20 hover:bg-white/30 border border-white/40 text-white text-sm font-semibold py-1.5 px-3 rounded-full transition flex items-center gap-2" title="Kunci Akses Admin">
+                                            <Icon name="lock" className="w-4 h-4" />
+                                        </button>
+                                    )}
+                                    <button onClick={handleAppLogout} className="bg-white text-red-600 hover:bg-red-50 text-sm font-bold py-1.5 px-3 rounded-full shadow-md transition flex items-center gap-2" title="Logout">
+                                        <Icon name="log-out" className="w-4 h-4" />
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </nav>
 
-                    <main className="max-w-7xl mx-auto px-4 sm:px-6 md:px-8 mt-6">
+                    <main className="max-w-7xl mx-auto px-4 sm:px-6 md:px-8 mt-6 flex-1 w-full">
                         
-                        {/* KARTU STATISTIK */}
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                            {/* Hari Ini - Selalu Terbuka */}
-                            <div className="bg-white p-5 rounded-2xl shadow-sm border border-orange-100 flex items-center gap-4 hover:shadow-md transition-shadow fade-in">
-                                <div className="bg-orange-100 p-4 rounded-xl text-orange-600">
-                                    <Icon name="sun" className="w-8 h-8" />
-                                </div>
-                                <div>
-                                    <p className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Hari Ini</p>
-                                    <h3 className="text-2xl font-bold text-gray-800">{formatRupiah(stats.daily.total)}</h3>
-                                    <p className="text-xs font-medium text-orange-600 bg-orange-50 inline-block px-2 py-0.5 rounded-md mt-1">{stats.daily.count} Pesanan</p>
-                                </div>
-                            </div>
-
-                            {/* Bulan Ini */}
-                            <div 
-                                onClick={handleLockedCardClick}
-                                className={`bg-white p-5 rounded-2xl shadow-sm border border-red-100 flex items-center gap-4 transition-all fade-in ${!isAuthorized ? 'cursor-pointer hover:bg-red-50 hover:shadow-md' : 'hover:shadow-md'}`} style={{animationDelay: '0.1s'}}>
-                                <div className={`p-4 rounded-xl ${isAuthorized ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-500'}`}>
-                                    <Icon name="calendar-days" className="w-8 h-8" />
-                                </div>
-                                <div className="flex-1">
-                                    <p className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Bulan Ini</p>
-                                    {isAuthorized ? (
-                                        <>
-                                            <h3 className="text-2xl font-bold text-gray-800">{formatRupiah(stats.monthly.total)}</h3>
-                                            <p className="text-xs font-medium text-red-600 bg-red-50 inline-block px-2 py-0.5 rounded-md mt-1">{stats.monthly.count} Pesanan</p>
-                                        </>
-                                    ) : (
-                                        <p className="text-sm font-medium text-gray-400 mt-1 italic flex items-center gap-1">
-                                            <Icon name="lock" className="w-3 h-3" />
-                                            <span>Ketuk untuk akses admin</span>
-                                        </p>
-                                    )}
-                                </div>
-                            </div>
-
-                            {/* Keseluruhan */}
-                            <div 
-                                onClick={handleLockedCardClick}
-                                className={`p-5 rounded-2xl shadow-md flex items-center gap-4 transition-all fade-in ${!isAuthorized ? 'bg-white border border-gray-200 cursor-pointer hover:bg-gray-50 text-gray-800' : 'bg-gradient-to-br from-yellow-400 to-orange-500 text-white hover:shadow-lg'}`} style={{animationDelay: '0.2s'}}>
-                                <div className={`p-4 rounded-xl ${isAuthorized ? 'bg-white/20 backdrop-blur-sm' : 'bg-gray-100 text-gray-500'}`}>
-                                    <Icon name="wallet" className="w-8 h-8" />
-                                </div>
-                                <div className="flex-1">
-                                    <p className={`text-sm font-semibold uppercase tracking-wider ${isAuthorized ? 'text-yellow-100' : 'text-gray-500'}`}>Total Keseluruhan</p>
-                                    {isAuthorized ? (
-                                        <>
-                                            <h3 className="text-2xl font-bold">{formatRupiah(stats.overall.total)}</h3>
-                                            <p className="text-xs font-medium bg-black/20 inline-block px-2 py-0.5 rounded-md mt-1">{stats.overall.count} Total Pesanan</p>
-                                        </>
-                                    ) : (
-                                        <p className="text-sm font-medium text-gray-400 mt-1 italic flex items-center gap-1">
-                                            <Icon name="lock" className="w-3 h-3" />
-                                            <span>Ketuk untuk akses admin</span>
-                                        </p>
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="flex flex-col lg:flex-row gap-6">
-                            
-                            {/* BAGIAN KIRI: Form Input */}
-                            <div className="w-full lg:w-1/3">
-                                <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 sticky top-28">
-                                    <h2 className="text-xl font-bold mb-5 flex items-center gap-2 text-gray-800 border-b pb-3">
-                                        <div className="bg-orange-100 p-1.5 rounded-lg text-orange-600">
-                                            <Icon name="plus" className="w-5 h-5" />
-                                        </div>
-                                        Input Pesanan Baru
-                                    </h2>
-                                    
-                                    <form onSubmit={handleSubmit} className="space-y-5">
+                        {/* ================= TAB POS KASIR ================= */}
+                        {activeTab === 'POS' && (
+                            <div className="fade-in">
+                                {/* STATISTIK SINGKAT POS */}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 mb-6">
+                                    <div className="bg-white p-4 rounded-2xl shadow-sm border border-orange-100 flex items-center gap-3">
+                                        <div className="bg-orange-100 p-3 rounded-xl text-orange-600"><Icon name="sun" className="w-6 h-6" /></div>
                                         <div>
-                                            <label className="block text-sm font-bold text-gray-700 mb-1.5">Nama Pesanan</label>
-                                            <input 
-                                                id="itemNameInput"
-                                                type="text" 
-                                                value={itemName}
-                                                onChange={(e) => setItemName(e.target.value)}
-                                                placeholder="Cth: Nasi Goreng + Es Teh"
-                                                className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none transition duration-200"
-                                            />
+                                            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Penjualan Hari Ini</p>
+                                            <h3 className="text-xl font-bold text-gray-800">{formatRupiah(stats.daily.total)}</h3>
                                         </div>
-                                        
+                                    </div>
+                                    <div className="bg-white p-4 rounded-2xl shadow-sm border border-red-100 flex items-center gap-3 cursor-pointer hover:bg-red-50 transition" onClick={handleLockedCardClick}>
+                                        <div className={`p-3 rounded-xl ${isAuthorized ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-500'}`}>
+                                            <Icon name="calendar-days" className="w-6 h-6" />
+                                        </div>
                                         <div>
-                                            <label className="block text-sm font-bold text-gray-700 mb-1.5">Harga Total (Rp)</label>
-                                            <input 
-                                                type="number" 
-                                                value={itemPrice}
-                                                onChange={(e) => setItemPrice(e.target.value)}
-                                                placeholder="Cth: 25000"
-                                                className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none transition duration-200 font-mono"
-                                            />
+                                            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1">Bulan Ini {!isAuthorized && <Icon name="lock" className="w-3 h-3"/>}</p>
+                                            <h3 className="text-xl font-bold text-gray-800">{isAuthorized ? formatRupiah(stats.monthly.total) : 'Rp ***.***'}</h3>
                                         </div>
-
-                                        <button 
-                                            type="submit" 
-                                            disabled={fb === 'ERROR'}
-                                            className={`w-full font-bold py-3.5 rounded-xl shadow-md transition duration-200 flex justify-center items-center gap-2 text-lg
-                                            ${fb === 'ERROR' ? 'bg-gray-400 cursor-not-allowed text-gray-200' : 'bg-gradient-to-r from-red-500 to-orange-500 hover:from-red-600 hover:to-orange-600 text-white hover:shadow-lg'}`}
-                                        >
-                                            <Icon name="save" className="w-5 h-5" />
-                                            Simpan Pesanan
-                                        </button>
-                                    </form>
-                                    
-                                    {fb === 'ERROR' && (
-                                        <div className="mt-4 p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg flex gap-2">
-                                            <Icon name="wifi-off" className="w-5 h-5 flex-shrink-0 mt-0.5" />
-                                            <span>Sistem gagal terhubung ke database. Cek pengaturan Firebase Anda.</span>
+                                    </div>
+                                    <div className="bg-gradient-to-br from-yellow-400 to-orange-500 p-4 rounded-2xl shadow-md flex items-center gap-3 text-white cursor-pointer hover:shadow-lg transition" onClick={handleLockedCardClick}>
+                                        <div className={`p-3 rounded-xl ${isAuthorized ? 'bg-white/20' : 'bg-gray-100/20'}`}>
+                                            <Icon name="wallet" className="w-6 h-6" />
                                         </div>
-                                    )}
+                                        <div>
+                                            <p className="text-xs font-semibold text-yellow-100 uppercase tracking-wider flex items-center gap-1">Total Keseluruhan {!isAuthorized && <Icon name="lock" className="w-3 h-3"/>}</p>
+                                            <h3 className="text-xl font-bold">{isAuthorized ? formatRupiah(stats.overall.total) : 'Rp ***.***'}</h3>
+                                        </div>
+                                    </div>
                                 </div>
-                            </div>
 
-                            {/* BAGIAN KANAN: Tabel Data */}
-                            <div className="w-full lg:w-2/3">
-                                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col h-full">
-                                    <div className="p-5 border-b border-gray-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-gray-50/50 rounded-t-2xl">
-                                        <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
-                                            <div className="bg-red-100 p-1.5 rounded-lg text-red-600">
-                                                <Icon name="list-ordered" className="w-5 h-5" />
+                                <div className="flex flex-col lg:flex-row gap-6">
+                                    {/* KIRI: MENU */}
+                                    <div className="w-full lg:w-[45%] xl:w-1/3 flex flex-col gap-6">
+                                        <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
+                                            <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-gray-800 border-b pb-2">
+                                                <Icon name="coffee" className="w-5 h-5 text-orange-500" />
+                                                Menu Pilihan
+                                            </h2>
+                                            
+                                            {/* MENU FIXED */}
+                                            <p className="text-xs font-bold text-gray-400 uppercase mb-2">Harga Tetap</p>
+                                            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-1 gap-2 mb-4">
+                                                {MENU_FIXED.map((item) => (
+                                                    <button key={item.id} onClick={() => addFixedToCart(item)} className="flex items-center justify-between p-3 rounded-xl border border-gray-200 hover:border-orange-400 hover:bg-orange-50 transition-all text-left">
+                                                        <div className="flex items-center gap-3">
+                                                            <div className="bg-orange-100 p-2 rounded-lg text-orange-600"><Icon name={item.icon} className="w-4 h-4" /></div>
+                                                            <div>
+                                                                <p className="font-bold text-gray-800 text-sm leading-tight">{item.name}</p>
+                                                                <p className="text-xs font-semibold text-gray-500">{formatRupiah(item.price)}</p>
+                                                            </div>
+                                                        </div>
+                                                        <div className="bg-white border border-gray-200 text-gray-400 p-1 rounded-lg shadow-sm"><Icon name="plus" className="w-4 h-4" /></div>
+                                                    </button>
+                                                ))}
                                             </div>
-                                            Riwayat Pesanan
-                                        </h2>
-                                        <button 
-                                            onClick={exportToCSV}
-                                            className="bg-green-600 hover:bg-green-700 text-white text-sm font-semibold py-2.5 px-5 rounded-xl shadow-sm hover:shadow transition flex items-center gap-2 w-full sm:w-auto justify-center"
-                                        >
-                                            <Icon name="download" className="w-4 h-4" />
-                                            Ekspor Data (Excel)
+
+                                            {/* MENU MANUAL */}
+                                            <p className="text-xs font-bold text-gray-400 uppercase mb-2 mt-4">Input Harga</p>
+                                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-1 gap-2">
+                                                {MENU_MANUAL.map((item) => (
+                                                    <button key={item.id} onClick={() => { setManualModal({show: true, item}); setManualPriceInput(""); }} className="flex items-center justify-between p-3 rounded-xl border border-dashed border-blue-300 hover:border-blue-500 bg-blue-50/50 hover:bg-blue-50 transition-all text-left">
+                                                        <div className="flex items-center gap-3">
+                                                            <div className="bg-blue-100 p-2 rounded-lg text-blue-600"><Icon name={item.icon} className="w-4 h-4" /></div>
+                                                            <p className="font-bold text-gray-800 text-sm leading-tight">{item.name}</p>
+                                                        </div>
+                                                        <div className="bg-white border border-blue-200 text-blue-500 p-1 rounded-lg shadow-sm"><Icon name="edit-2" className="w-3 h-3" /></div>
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        {/* KERANJANG */}
+                                        <div className="bg-white p-5 rounded-2xl shadow-sm border-t-4 border-orange-500 relative sticky top-20">
+                                            <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-gray-800 border-b pb-3">
+                                                <Icon name="shopping-cart" className="w-5 h-5 text-orange-500" />
+                                                Struk Pesanan
+                                            </h2>
+                                            
+                                            <div className="min-h-[100px] max-h-[30vh] overflow-y-auto pr-2 mb-4 space-y-2">
+                                                {cart.length === 0 ? (
+                                                    <p className="text-center text-gray-400 text-sm py-4 italic">Belum ada menu yang dipilih.</p>
+                                                ) : (
+                                                    cart.map((item) => (
+                                                        <div key={item.cartId} className="flex flex-col sm:flex-row sm:items-center justify-between bg-gray-50 p-2.5 rounded-lg border border-gray-100 gap-2">
+                                                            <div className="flex-1">
+                                                                <p className="text-sm font-bold text-gray-800 leading-tight">{item.name}</p>
+                                                                <p className="text-xs text-gray-500">{formatRupiah(item.price)} <span className="text-gray-300 mx-1">|</span> Qty: {item.qty}</p>
+                                                            </div>
+                                                            <div className="flex items-center justify-between sm:justify-end w-full sm:w-auto gap-3">
+                                                                <span className="font-bold text-sm text-orange-600">
+                                                                    {formatRupiah(item.price * item.qty)}
+                                                                </span>
+                                                                <div className="flex bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
+                                                                    <button onClick={() => updateCartQty(item.cartId, -1)} className="px-2 py-1 text-gray-500 hover:bg-red-50 hover:text-red-600 transition"><Icon name="minus" className="w-3 h-3" /></button>
+                                                                    <span className="px-2 py-1 text-xs font-bold bg-gray-50 min-w-[24px] text-center">{item.qty}</span>
+                                                                    <button onClick={() => updateCartQty(item.cartId, 1)} className="px-2 py-1 text-gray-500 hover:bg-green-50 hover:text-green-600 transition"><Icon name="plus" className="w-3 h-3" /></button>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    ))
+                                                )}
+                                            </div>
+
+                                            <div className="border-t pt-4">
+                                                <div className="flex justify-between items-center mb-3">
+                                                    <span className="text-gray-500 font-semibold text-sm">Total Tagihan:</span>
+                                                    <span className="text-xl font-black text-gray-800">{formatRupiah(currentCartTotal)}</span>
+                                                </div>
+                                                
+                                                <label className="flex items-center gap-2 mb-4 p-3 bg-blue-50 border border-blue-100 rounded-xl cursor-pointer hover:bg-blue-100 transition">
+                                                    <input type="checkbox" checked={isQris} onChange={(e) => setIsQris(e.target.checked)} className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500"/>
+                                                    <span className="font-bold text-blue-800 text-sm flex items-center gap-2">
+                                                        <Icon name="qr-code" className="w-4 h-4"/> Pembayaran via QRIS
+                                                    </span>
+                                                </label>
+
+                                                <div className="flex gap-2">
+                                                    <button onClick={clearCart} disabled={cart.length === 0} className="px-4 py-3 bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold rounded-xl transition disabled:opacity-50">
+                                                        <Icon name="trash" className="w-5 h-5" />
+                                                    </button>
+                                                    <button onClick={handleCheckout} disabled={cart.length === 0 || fb === 'ERROR'} className="flex-1 bg-gradient-to-r from-red-500 to-orange-500 hover:from-red-600 text-white font-bold py-3 rounded-xl shadow-md transition duration-200 flex justify-center items-center gap-2 text-base disabled:opacity-50">
+                                                        <Icon name="check-circle" className="w-5 h-5" /> Simpan
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* KANAN: RIWAYAT */}
+                                    <div className="w-full lg:w-[55%] xl:w-2/3">
+                                        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col h-full">
+                                            <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50 rounded-t-2xl">
+                                                <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                                                    <Icon name="history" className="w-5 h-5 text-gray-500" /> Riwayat Transaksi
+                                                </h2>
+                                                <button onClick={exportToCSV} className="bg-green-600 hover:bg-green-700 text-white text-sm font-semibold py-2 px-4 rounded-xl shadow-sm transition flex items-center gap-2">
+                                                    <Icon name="download" className="w-4 h-4" /> Ekspor (Excel)
+                                                </button>
+                                            </div>
+                                            <div className="overflow-x-auto">
+                                                <table className="w-full text-left border-collapse min-w-[500px]">
+                                                    <thead>
+                                                        <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider border-b border-gray-100">
+                                                            <th className="p-3 font-bold">Waktu</th>
+                                                            <th className="p-3 font-bold w-1/2">Pesanan</th>
+                                                            <th className="p-3 font-bold">Total</th>
+                                                            <th className="p-3 font-bold text-center">Opsi</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody className="divide-y divide-gray-100">
+                                                        {orders.map((order, index) => {
+                                                            const dateObj = new Date(order.timestamp);
+                                                            const currentDateString = dateObj.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+                                                            let showDateSeparator = index === 0 || currentDateString !== new Date(orders[index - 1].timestamp).toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+
+                                                            return (
+                                                                <React.Fragment key={order.id}>
+                                                                    {showDateSeparator && (
+                                                                        <tr className="bg-orange-50"><td colSpan="4" className="px-4 py-1.5 text-center text-xs font-bold text-orange-800 border-y border-orange-100">{currentDateString}</td></tr>
+                                                                    )}
+                                                                    <tr className="hover:bg-gray-50 transition-colors group">
+                                                                        <td className="p-3 whitespace-nowrap align-top">
+                                                                            <div className="text-sm font-bold text-gray-800">{dateObj.toLocaleTimeString('id-ID', {hour: '2-digit', minute:'2-digit'})}</div>
+                                                                            <div className="text-xs text-gray-400 mt-1 flex items-center gap-1"><Icon name="user" className="w-3 h-3"/> {order.kasir || '-'}</div>
+                                                                            <div className="text-xs text-gray-400 mt-1">{order.session === 'MALAM' ? 'Sesi Malam' : 'Sesi Siang'}</div>
+                                                                        </td>
+                                                                        <td className="p-3">
+                                                                            <div className="font-medium text-gray-800 text-sm leading-snug">
+                                                                                {order.items ? order.items.map((it, i) => (
+                                                                                    <div key={i} className="flex items-start gap-1.5 mb-1"><span className="text-orange-500 mt-0.5">•</span> {it.name} <span className="text-gray-400 font-normal ml-1">x{it.qty}</span></div>
+                                                                                )) : order.name.split(', ').map((str, i) => <div key={i} className="flex items-start gap-1.5 mb-1"><span className="text-orange-500 mt-0.5">•</span>{str}</div>)}
+                                                                            </div>
+                                                                        </td>
+                                                                        <td className="p-3 align-top">
+                                                                            <span className="font-bold text-gray-800 block mb-1">{formatRupiah(order.price)}</span>
+                                                                            {order.isQris && <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded"><Icon name="qr-code" className="w-3 h-3"/> QRIS</span>}
+                                                                        </td>
+                                                                        <td className="p-3 text-center align-top">
+                                                                            <button onClick={() => handleDeleteClick(order.id)} className={`p-2 rounded-lg transition opacity-100 lg:opacity-0 group-hover:opacity-100 ${isAuthorized ? 'text-red-500 hover:bg-red-50' : 'text-gray-400 hover:text-red-500'}`}>
+                                                                                <Icon name={isAuthorized ? "trash-2" : "lock"} className="w-4 h-4" />
+                                                                            </button>
+                                                                        </td>
+                                                                    </tr>
+                                                                </React.Fragment>
+                                                            );
+                                                        })}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* ================= TAB STOK ================= */}
+                        {activeTab === 'STOK' && (
+                            <div className="fade-in max-w-4xl mx-auto">
+                                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                                    <div className="bg-gradient-to-r from-orange-500 to-yellow-400 p-6 text-white flex justify-between items-center">
+                                        <div>
+                                            <h2 className="text-2xl font-bold flex items-center gap-2"><Icon name="package" /> Manajemen Stok Harian</h2>
+                                            <p className="text-orange-100 text-sm mt-1">Tanggal: {new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p>
+                                        </div>
+                                        <button onClick={saveStockToDb} className="bg-white text-orange-600 hover:bg-orange-50 font-bold py-2 px-4 rounded-xl shadow-sm transition flex items-center gap-2">
+                                            <Icon name="save" className="w-5 h-5"/> Simpan Data
                                         </button>
                                     </div>
                                     
-                                    <div className="overflow-x-auto">
-                                        <table className="w-full text-left border-collapse min-w-[500px]">
+                                    <div className="p-0 overflow-x-auto">
+                                        <table className="w-full text-left border-collapse">
                                             <thead>
-                                                <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider border-b border-gray-100">
-                                                    <th className="p-4 font-bold w-1/4">Waktu</th>
-                                                    <th className="p-4 font-bold w-1/2">Menu Pesanan</th>
-                                                    <th className="p-4 font-bold">Harga</th>
-                                                    <th className="p-4 font-bold text-center w-16">Opsi</th>
+                                                <tr className="bg-gray-50 text-gray-600 text-xs uppercase tracking-wider border-b border-gray-200">
+                                                    <th className="p-4 font-bold">Nama Menu</th>
+                                                    <th className="p-4 font-bold text-center">Stok Awal</th>
+                                                    <th className="p-4 font-bold text-center">Penambahan</th>
+                                                    <th className="p-4 font-bold text-center text-red-500 bg-red-50/50">Terjual (Sistem)</th>
+                                                    <th className="p-4 font-bold text-center text-blue-600 bg-blue-50/50">Sisa Sistem</th>
+                                                    <th className="p-4 font-bold text-center">Sisa Nyata (Fisik)</th>
+                                                    <th className="p-4 font-bold text-center">Selisih</th>
                                                 </tr>
                                             </thead>
                                             <tbody className="divide-y divide-gray-100">
-                                                {orders.length === 0 ? (
-                                                    <tr>
-                                                        <td colSpan="4" className="p-12 text-center text-gray-400">
-                                                            <div className="flex flex-col items-center gap-3">
-                                                                <Icon name="inbox" className="w-12 h-12 text-gray-300" />
-                                                                <p>Belum ada data pesanan.</p>
-                                                            </div>
-                                                        </td>
-                                                    </tr>
-                                                ) : (
-                                                    orders.map((order, index) => {
-                                                        const dateObj = new Date(order.timestamp);
-                                                        const currentDateString = dateObj.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-                                                        
-                                                        // Cek apakah ini item pertama, atau apakah tanggalnya beda dengan item sebelumnya
-                                                        let showDateSeparator = false;
-                                                        if (index === 0) {
-                                                            showDateSeparator = true;
-                                                        } else {
-                                                            const prevDateObj = new Date(orders[index - 1].timestamp);
-                                                            const prevDateString = prevDateObj.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-                                                            if (currentDateString !== prevDateString) {
-                                                                showDateSeparator = true;
-                                                            }
-                                                        }
-
-                                                        return (
-                                                            <React.Fragment key={order.id}>
-                                                                {/* Baris Pemisah Tanggal */}
-                                                                {showDateSeparator && (
-                                                                    <tr className="bg-orange-100/50">
-                                                                        <td colSpan="4" className="px-4 py-2 text-center text-sm font-bold text-orange-800 border-y border-orange-200">
-                                                                            {currentDateString}
-                                                                        </td>
-                                                                    </tr>
-                                                                )}
-                                                                
-                                                                {/* Baris Data Pesanan */}
-                                                                <tr className="hover:bg-orange-50/50 transition-colors group">
-                                                                    <td className="p-4 whitespace-nowrap">
-                                                                        <div className="text-sm font-bold text-gray-800">{dateObj.toLocaleTimeString('id-ID', {hour: '2-digit', minute:'2-digit'})}</div>
-                                                                        <div className="text-xs text-gray-500">{dateObj.toLocaleDateString('id-ID', {day:'numeric', month:'short', year:'numeric'})}</div>
-                                                                    </td>
-                                                                    <td className="p-4">
-                                                                        <span className="font-semibold text-gray-800 text-sm md:text-base block">{order.name}</span>
-                                                                        {order.kasir && (
-                                                                            <div className="text-xs text-gray-400 mt-1 flex items-center gap-1">
-                                                                                <Icon name="user" className="w-3 h-3" /> {order.kasir}
-                                                                            </div>
-                                                                        )}
-                                                                    </td>
-                                                                    <td className="p-4">
-                                                                        <span className="font-bold text-green-600 bg-green-50 px-2 py-1 rounded-md text-sm whitespace-nowrap">{formatRupiah(order.price)}</span>
-                                                                    </td>
-                                                                    <td className="p-4 text-center align-middle">
-                                                                        <button 
-                                                                            onClick={() => handleDeleteClick(order.id)}
-                                                                            className={`p-2 rounded-lg transition opacity-100 sm:opacity-0 group-hover:opacity-100 focus:opacity-100
-                                                                            ${isAuthorized ? 'text-red-500 hover:text-white hover:bg-red-500' : 'text-gray-400 hover:text-red-500 hover:bg-red-50'}`}
-                                                                            title={isAuthorized ? "Hapus Langsung" : "Hapus (Perlu PIN Admin)"}
-                                                                        >
-                                                                            <Icon name="trash-2" className="w-5 h-5" />
-                                                                        </button>
-                                                                    </td>
-                                                                </tr>
-                                                            </React.Fragment>
-                                                        );
-                                                    })
-                                                )}
+                                                {MENU_FIXED.map(item => {
+                                                    const s = dailyStock[item.name] || { awal: 0, tambah: 0, fisik: 0 };
+                                                    const terjual = soldItemsToday[item.name] || 0;
+                                                    const sisaSistem = (s.awal + s.tambah) - terjual;
+                                                    const selisih = s.fisik - sisaSistem;
+                                                    
+                                                    return (
+                                                        <tr key={item.id} className="hover:bg-gray-50">
+                                                            <td className="p-4 font-bold text-gray-800 flex items-center gap-2">
+                                                                <Icon name={item.icon} className="w-4 h-4 text-gray-400"/> {item.name}
+                                                            </td>
+                                                            <td className="p-3">
+                                                                <input type="number" min="0" value={s.awal || ''} onChange={(e)=>handleUpdateStock(item.name, 'awal', e.target.value)} className="w-full p-2 border border-gray-200 rounded-lg text-center focus:ring-2 focus:ring-orange-400 outline-none" placeholder="0"/>
+                                                            </td>
+                                                            <td className="p-3">
+                                                                <input type="number" min="0" value={s.tambah || ''} onChange={(e)=>handleUpdateStock(item.name, 'tambah', e.target.value)} className="w-full p-2 border border-gray-200 rounded-lg text-center focus:ring-2 focus:ring-orange-400 outline-none" placeholder="0"/>
+                                                            </td>
+                                                            <td className="p-4 text-center font-bold text-red-500 bg-red-50/30">{terjual}</td>
+                                                            <td className="p-4 text-center font-bold text-blue-600 bg-blue-50/30">{sisaSistem}</td>
+                                                            <td className="p-3">
+                                                                <input type="number" min="0" value={s.fisik || ''} onChange={(e)=>handleUpdateStock(item.name, 'fisik', e.target.value)} className="w-full p-2 border border-gray-200 rounded-lg text-center focus:ring-2 focus:ring-orange-400 outline-none font-bold" placeholder="0"/>
+                                                            </td>
+                                                            <td className="p-4 text-center font-bold">
+                                                                <span className={`px-2 py-1 rounded ${selisih === 0 ? 'text-green-600 bg-green-100' : selisih < 0 ? 'text-red-600 bg-red-100' : 'text-blue-600 bg-blue-100'}`}>
+                                                                    {selisih > 0 ? `+${selisih}` : selisih}
+                                                                </span>
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
                                             </tbody>
                                         </table>
                                     </div>
+                                    <div className="p-4 bg-yellow-50 text-xs text-yellow-800 border-t border-yellow-200 flex items-start gap-2">
+                                        <Icon name="info" className="w-4 h-4 flex-shrink-0" />
+                                        <p><b>Catatan:</b> 'Terjual' dihitung otomatis dari pesanan hari ini. 'Sisa Sistem' = (Stok Awal + Penambahan) - Terjual. Selisih negatif berarti ada barang hilang/tidak terinput. Tekan "Simpan Data" setelah mengubah angka.</p>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* ================= TAB KEUANGAN (DIBAGI 2 SESI) ================= */}
+                        {activeTab === 'KEUANGAN' && (
+                            <div className="fade-in max-w-5xl mx-auto space-y-6">
+                                {/* SESI SIANG */}
+                                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                                    <div className="bg-gradient-to-r from-yellow-500 to-orange-400 p-4 sm:p-6 text-white flex justify-between items-center">
+                                        <div>
+                                            <h2 className="text-xl sm:text-2xl font-bold flex items-center gap-2"><Icon name="sun" /> Keuangan: Sesi Siang</h2>
+                                            <p className="text-yellow-100 text-xs sm:text-sm mt-1">{new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p>
+                                        </div>
+                                    </div>
+
+                                    <div className="p-4 sm:p-6 space-y-6">
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                            <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                                                <p className="text-sm text-gray-500 font-semibold mb-1">Total Pendapatan Sistem</p>
+                                                <h3 className="text-2xl font-black text-gray-800">{formatRupiah(financeStats.siang.totalIncome)}</h3>
+                                            </div>
+                                            <div className="bg-blue-50 p-4 rounded-xl border border-blue-200">
+                                                <p className="text-sm text-blue-600 font-semibold mb-1 flex items-center gap-1"><Icon name="qr-code" className="w-4 h-4"/> Pembayaran QRIS</p>
+                                                <h3 className="text-2xl font-black text-blue-800">{formatRupiah(financeStats.siang.totalQris)}</h3>
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-orange-50 p-5 rounded-xl border border-orange-200 text-center">
+                                            <p className="text-sm text-orange-700 font-bold mb-1">Ekspektasi Uang Tunai (Total - QRIS)</p>
+                                            <h3 className="text-4xl font-black text-orange-800">{formatRupiah(financeStats.siang.totalCashExpected)}</h3>
+                                        </div>
+
+                                        <div className="border-t border-gray-200 pt-6">
+                                            <label className="block text-sm font-bold text-gray-700 mb-2">Hitung Fisik Uang di Laci (Sesi Siang)</label>
+                                            <div className="flex gap-4 items-center">
+                                                <input 
+                                                    type="number" 
+                                                    value={dailyFinance.uangLaciSiang || ''}
+                                                    onChange={(e) => setDailyFinance(prev => ({...prev, uangLaciSiang: Number(e.target.value)}))}
+                                                    className="flex-1 p-4 text-2xl font-bold text-gray-800 bg-white border-2 border-gray-300 rounded-xl focus:ring-0 focus:border-orange-500 outline-none transition"
+                                                    placeholder="0"
+                                                />
+                                                <button onClick={() => saveFinanceToDb('SIANG')} className="bg-gray-800 hover:bg-gray-900 text-white font-bold py-4 px-6 rounded-xl transition flex items-center gap-2">
+                                                    <Icon name="save" /> Simpan
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <div className={`p-5 rounded-xl flex items-center justify-between border ${financeStats.siang.selisih === 0 ? 'bg-green-50 border-green-200' : financeStats.siang.selisih < 0 ? 'bg-red-50 border-red-200' : 'bg-blue-50 border-blue-200'}`}>
+                                            <div>
+                                                <p className={`text-sm font-bold ${financeStats.siang.selisih === 0 ? 'text-green-700' : financeStats.siang.selisih < 0 ? 'text-red-700' : 'text-blue-700'}`}>Status Selisih (Siang)</p>
+                                                <p className="text-xs text-gray-500">Uang Laci dikurangi Ekspektasi Tunai</p>
+                                            </div>
+                                            <h3 className={`text-2xl font-black ${financeStats.siang.selisih === 0 ? 'text-green-700' : financeStats.siang.selisih < 0 ? 'text-red-700' : 'text-blue-700'}`}>
+                                                {financeStats.siang.selisih > 0 ? '+' : ''}{formatRupiah(financeStats.siang.selisih)}
+                                            </h3>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* SESI MALAM */}
+                                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                                    <div className="bg-gradient-to-r from-indigo-700 to-purple-600 p-4 sm:p-6 text-white flex justify-between items-center">
+                                        <div>
+                                            <h2 className="text-xl sm:text-2xl font-bold flex items-center gap-2"><Icon name="moon" /> Keuangan: Sesi Malam</h2>
+                                            <p className="text-indigo-200 text-xs sm:text-sm mt-1">{new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p>
+                                        </div>
+                                    </div>
+
+                                    <div className="p-4 sm:p-6 space-y-6">
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                            <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                                                <p className="text-sm text-gray-500 font-semibold mb-1">Total Pendapatan Sistem</p>
+                                                <h3 className="text-2xl font-black text-gray-800">{formatRupiah(financeStats.malam.totalIncome)}</h3>
+                                            </div>
+                                            <div className="bg-blue-50 p-4 rounded-xl border border-blue-200">
+                                                <p className="text-sm text-blue-600 font-semibold mb-1 flex items-center gap-1"><Icon name="qr-code" className="w-4 h-4"/> Pembayaran QRIS</p>
+                                                <h3 className="text-2xl font-black text-blue-800">{formatRupiah(financeStats.malam.totalQris)}</h3>
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-indigo-50 p-5 rounded-xl border border-indigo-200 text-center">
+                                            <p className="text-sm text-indigo-700 font-bold mb-1">Ekspektasi Uang Tunai (Total - QRIS)</p>
+                                            <h3 className="text-4xl font-black text-indigo-800">{formatRupiah(financeStats.malam.totalCashExpected)}</h3>
+                                        </div>
+
+                                        <div className="border-t border-gray-200 pt-6">
+                                            <label className="block text-sm font-bold text-gray-700 mb-2">Hitung Fisik Uang di Laci (Sesi Malam)</label>
+                                            <div className="flex gap-4 items-center">
+                                                <input 
+                                                    type="number" 
+                                                    value={dailyFinance.uangLaciMalam || ''}
+                                                    onChange={(e) => setDailyFinance(prev => ({...prev, uangLaciMalam: Number(e.target.value)}))}
+                                                    className="flex-1 p-4 text-2xl font-bold text-gray-800 bg-white border-2 border-gray-300 rounded-xl focus:ring-0 focus:border-indigo-500 outline-none transition"
+                                                    placeholder="0"
+                                                />
+                                                <button onClick={() => saveFinanceToDb('MALAM')} className="bg-gray-800 hover:bg-gray-900 text-white font-bold py-4 px-6 rounded-xl transition flex items-center gap-2">
+                                                    <Icon name="save" /> Simpan
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <div className={`p-5 rounded-xl flex items-center justify-between border ${financeStats.malam.selisih === 0 ? 'bg-green-50 border-green-200' : financeStats.malam.selisih < 0 ? 'bg-red-50 border-red-200' : 'bg-blue-50 border-blue-200'}`}>
+                                            <div>
+                                                <p className={`text-sm font-bold ${financeStats.malam.selisih === 0 ? 'text-green-700' : financeStats.malam.selisih < 0 ? 'text-red-700' : 'text-blue-700'}`}>Status Selisih (Malam)</p>
+                                                <p className="text-xs text-gray-500">Uang Laci dikurangi Ekspektasi Tunai</p>
+                                            </div>
+                                            <h3 className={`text-2xl font-black ${financeStats.malam.selisih === 0 ? 'text-green-700' : financeStats.malam.selisih < 0 ? 'text-red-700' : 'text-blue-700'}`}>
+                                                {financeStats.malam.selisih > 0 ? '+' : ''}{formatRupiah(financeStats.malam.selisih)}
+                                            </h3>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </main>
+
+                    {/* MODAL PINDAH SESI */}
+                    {showSessionModal && (
+                        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 fade-in">
+                            <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl text-center">
+                                <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${activeSession === 'SIANG' ? 'bg-indigo-100 text-indigo-600' : 'bg-yellow-100 text-yellow-600'}`}>
+                                    <Icon name={activeSession === 'SIANG' ? 'moon' : 'sun'} className="w-8 h-8" />
+                                </div>
+                                <h3 className="text-xl font-bold text-gray-800 mb-2">
+                                    Pindah ke Sesi {activeSession === 'SIANG' ? 'Malam' : 'Siang'}?
+                                </h3>
+                                <p className="text-sm text-gray-500 mb-6">
+                                    Semua pesanan selanjutnya akan tercatat pada Sesi {activeSession === 'SIANG' ? 'Malam' : 'Siang'}.
+                                </p>
+                                
+                                <div className="flex gap-3">
+                                    <button onClick={() => setShowSessionModal(false)} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 rounded-xl transition">Batal</button>
+                                    <button onClick={switchSession} className={`flex-1 text-white font-bold py-3 rounded-xl shadow-md transition ${activeSession === 'SIANG' ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-yellow-500 hover:bg-yellow-600'}`}>
+                                        Ya, Pindah Sesi
+                                    </button>
                                 </div>
                             </div>
                         </div>
-                    </main>
+                    )}
 
-                    {/* NOTIFIKASI TOAST */}
+                    {/* MODAL INPUT MANUAL PRICE */}
+                    {manualModal.show && (
+                        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 fade-in">
+                            <form onSubmit={submitManualPrice} className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl transform transition-transform">
+                                <div className="w-14 h-14 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                                    <Icon name={manualModal.item.icon} className="w-7 h-7" />
+                                </div>
+                                <h3 className="text-2xl font-bold text-gray-800 text-center mb-1">{manualModal.item.name}</h3>
+                                <p className="text-sm text-gray-500 text-center mb-6">Masukkan nominal harga untuk pesanan ini</p>
+                                
+                                <div className="relative mb-6">
+                                    <span className="absolute left-4 top-1/2 transform -translate-y-1/2 font-bold text-gray-500">Rp</span>
+                                    <input 
+                                        id="manualPriceInput"
+                                        type="number" 
+                                        value={manualPriceInput}
+                                        onChange={(e) => setManualPriceInput(e.target.value)}
+                                        placeholder="0"
+                                        className="w-full pl-12 pr-4 py-4 bg-gray-50 border-2 border-gray-200 rounded-2xl focus:ring-0 focus:border-blue-500 outline-none transition text-2xl font-black text-gray-800"
+                                    />
+                                </div>
+
+                                <div className="flex gap-3">
+                                    <button type="button" onClick={() => setManualModal({show: false, item: null})} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3.5 rounded-xl transition">Batal</button>
+                                    <button type="submit" className="flex-[2] bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl shadow-md transition">Tambahkan</button>
+                                </div>
+                            </form>
+                        </div>
+                    )}
+
+                    {/* MODAL LOGIN ADMIN UNTUK MEMBUKA FITUR TERKUNCI */}
+                    {showAdminLoginModal && (
+                        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 fade-in">
+                            <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl">
+                                <div className="w-14 h-14 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                                    <Icon name="shield-check" className="text-orange-600 w-7 h-7" />
+                                </div>
+                                <h3 className="text-xl font-bold text-gray-800 text-center mb-2">Otorisasi Admin</h3>
+                                <p className="text-sm text-gray-500 text-center mb-6">Minta Admin memasukkan PIN untuk membuka akses ini.</p>
+                                
+                                <div className="relative mb-2">
+                                    <div className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400"><Icon name="key" className="w-5 h-5" /></div>
+                                    <input 
+                                        type="password" ref={passwordInputRef} value={adminPasswordInput} onChange={(e) => setAdminPasswordInput(e.target.value)}
+                                        placeholder="PIN Admin..." className="w-full pl-12 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:border-orange-500 outline-none text-center tracking-widest text-lg font-bold"
+                                        onKeyDown={(e) => { if(e.key === 'Enter') handleAdminLogin(); }}
+                                    />
+                                </div>
+                                {adminError && <p className="text-sm text-red-500 mb-4 font-semibold text-center animate-pulse">{adminError}</p>}
+
+                                <div className="flex gap-3 mt-6">
+                                    <button onClick={() => setShowAdminLoginModal(false)} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 rounded-xl transition">Batal</button>
+                                    <button onClick={handleAdminLogin} className="flex-1 bg-orange-600 hover:bg-orange-700 text-white font-bold py-3 rounded-xl shadow-md">Buka Akses</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    
+                    {/* TOAST SYSTEM */}
                     {toast.show && (
                         <div className={`fixed bottom-6 right-6 flex items-center gap-3 text-white px-6 py-4 rounded-xl shadow-2xl animate-bounce z-50 ${toast.type === 'error' ? 'bg-red-600' : 'bg-green-600'}`}>
                             <Icon name={toast.type === 'error' ? 'alert-triangle' : 'check-circle'} className="w-6 h-6" />
                             <span className="font-bold">{toast.message}</span>
-                        </div>
-                    )}
-
-                    {/* MODAL LOGIN ADMIN UNTUK MEMBUKA SEMUA FITUR (Khusus Kasir) */}
-                    {showAdminLoginModal && (
-                        <div className="fixed inset-0 bg-gray-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 fade-in">
-                            <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl transform scale-100 transition-transform">
-                                <div className="w-12 h-12 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                                    <Icon name="shield-check" className="text-orange-600 w-6 h-6" />
-                                </div>
-                                <h3 className="text-xl font-bold text-gray-800 text-center mb-2">
-                                    Otorisasi Admin
-                                </h3>
-                                <p className="text-sm text-gray-500 text-center mb-6">
-                                    {pendingDeleteId ? "Minta Admin memasukkan PIN untuk menghapus pesanan ini." : "Minta Admin memasukkan PIN untuk membuka laporan keuangan."}
-                                </p>
-                                
-                                <div className="relative mb-2">
-                                    <div className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400">
-                                        <Icon name="key" className="w-5 h-5" />
-                                    </div>
-                                    <input 
-                                        type="password" 
-                                        ref={passwordInputRef}
-                                        value={adminPasswordInput}
-                                        onChange={(e) => setAdminPasswordInput(e.target.value)}
-                                        placeholder="Masukkan PIN Admin..."
-                                        className="w-full pl-12 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none transition"
-                                        onKeyDown={(e) => { if(e.key === 'Enter') handleAdminLogin(); }}
-                                    />
-                                </div>
-                                
-                                {adminError && <p className="text-sm text-red-500 mb-4 font-semibold text-center animate-pulse">{adminError}</p>}
-
-                                <div className="flex gap-3 mt-6">
-                                    <button 
-                                        onClick={cancelAdminLogin}
-                                        className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 rounded-xl transition"
-                                    >
-                                        Batal
-                                    </button>
-                                    <button 
-                                        onClick={handleAdminLogin}
-                                        className="flex-1 bg-orange-600 hover:bg-orange-700 text-white font-bold py-3 rounded-xl transition shadow-md shadow-orange-500/30"
-                                    >
-                                        Buka Akses
-                                    </button>
-                                </div>
-                            </div>
                         </div>
                     )}
                 </div>
