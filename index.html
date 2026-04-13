@@ -39,12 +39,12 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc, setDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Mengekspos Firebase ke window agar bisa dibaca dengan aman oleh React
         window.FirebaseAPI = {
             initializeApp, getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken,
-            getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc, setDoc
+            getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc, setDoc, getDocs
         };
     </script>
 
@@ -53,15 +53,13 @@
 
         const DELETE_PASSWORD = "butitin123";
 
-        // Daftar Akun Pengguna
+        // Daftar Akun Pengguna (Hanya Admin dan Kasir)
         const APP_USERS = [
             { name: 'Admin', role: 'ADMIN', pin: 'butitin123' },
-            { name: 'Siti', role: 'KASIR', pin: '1111' },
-            { name: 'Budi', role: 'KASIR', pin: '2222' },
-            { name: 'Ayu', role: 'KASIR', pin: '3333' }
+            { name: 'Kasir', role: 'KASIR', pin: '1234' }
         ];
 
-        // Daftar Semua Menu (Input Harga Manual)
+        // Daftar Semua Menu (Input Harga Manual / Otomatis)
         const MENU_ITEMS = [
             { id: 'm1', name: 'Ayam Geprek', basePrice: 10000, icon: 'drumstick' },
             { id: 'm3', name: 'Ayam Bakar', basePrice: 12000, icon: 'flame' },
@@ -114,27 +112,26 @@
             const [cart, setCart] = useState([]);
             const [isQris, setIsQris] = useState(false);
 
-            // Manual Input Modal State
+            // Modal States
             const [manualModal, setManualModal] = useState({ show: false, item: null });
             const [manualPriceInput, setManualPriceInput] = useState("");
-
-            // Export Modal State
             const [showExportModal, setShowExportModal] = useState(false);
 
-            // Stock & Finance State (Today)
-            const [dailyStock, setDailyStock] = useState({ SIANG: {}, MALAM: {} });
+            // Finance (Keuangan) State
+            const [selectedFinanceDate, setSelectedFinanceDate] = useState(getTodayDocId());
             const [dailyFinance, setDailyFinance] = useState({ 
                 uangLaciSiang: 0, uangLaciMalam: 0, 
                 pengeluaranSiang: [], pengeluaranMalam: [],
                 plusanSiang: 0, plusanMalam: 0,
                 selisihTambahanSiang: 0, selisihTambahanMalam: 0
             });
-            
-            // Expense Inputs
             const [expenseInputs, setExpenseInputs] = useState({
                 SIANG: { ket: '', biaya: '' },
                 MALAM: { ket: '', biaya: '' }
             });
+
+            // Stock State (Always Today for simplicity)
+            const [dailyStock, setDailyStock] = useState({ SIANG: {}, MALAM: {} });
 
             // Session State
             const [activeSession, setActiveSession] = useState('SIANG'); 
@@ -191,7 +188,8 @@
                                         addDoc: fbAPI.addDoc, 
                                         deleteDoc: fbAPI.deleteDoc, 
                                         doc: fbAPI.doc,
-                                        setDoc: fbAPI.setDoc
+                                        setDoc: fbAPI.setDoc,
+                                        getDocs: fbAPI.getDocs
                                     });
 
                                     if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -219,12 +217,13 @@
                 setupBackend();
             }, []);
 
-            // --- 2. FETCH DATA ---
+            // --- 2. FETCH DATA & CLEANUP 7 DAYS ---
             useEffect(() => {
                 if (fb === 'NO_DB' || fb === 'ERROR' || !user || !fb) return;
 
                 const todayId = getTodayDocId();
 
+                // Fetch Settings
                 const settingsRef = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'settings', 'app_config');
                 const unsubSettings = fb.onSnapshot(settingsRef, (docSnap) => {
                     if (docSnap.exists()) {
@@ -246,6 +245,7 @@
                     }
                 });
 
+                // Fetch Orders
                 const ordersRef = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'orders_kedai_titin');
                 const unsubOrders = fb.onSnapshot(ordersRef, 
                     (snapshot) => {
@@ -258,6 +258,7 @@
                     (error) => { console.error(error); setIsLoading(false); }
                 );
 
+                // Fetch Today's Stock
                 const stockRef = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'stock_kedai_titin', todayId);
                 const unsubStock = fb.onSnapshot(stockRef, (docSnap) => {
                     if (docSnap.exists()) {
@@ -271,36 +272,78 @@
                     }
                 }, (error) => console.error(error));
 
+                // Fetch All Finance
                 const financeCollRef = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'finance_kedai_titin');
                 const unsubFinanceAll = fb.onSnapshot(financeCollRef, (snapshot) => {
                     const data = [];
                     snapshot.forEach(doc => data.push({ id: doc.id, ...doc.data() }));
                     setAllFinance(data);
-                    
-                    const todayData = data.find(d => d.id === todayId);
-                    if (todayData) {
-                        setDailyFinance({
-                            uangLaciSiang: todayData.uangLaciSiang || 0,
-                            uangLaciMalam: todayData.uangLaciMalam || 0,
-                            pengeluaranSiang: todayData.pengeluaranSiang || [],
-                            pengeluaranMalam: todayData.pengeluaranMalam || [],
-                            plusanSiang: todayData.plusanSiang || 0,
-                            plusanMalam: todayData.plusanMalam || 0,
-                            selisihTambahanSiang: todayData.selisihTambahanSiang || 0,
-                            selisihTambahanMalam: todayData.selisihTambahanMalam || 0
-                        });
-                    } else {
-                        setDailyFinance({ 
-                            uangLaciSiang: 0, uangLaciMalam: 0, 
-                            pengeluaranSiang: [], pengeluaranMalam: [],
-                            plusanSiang: 0, plusanMalam: 0,
-                            selisihTambahanSiang: 0, selisihTambahanMalam: 0
-                        });
-                    }
                 }, (error) => console.error(error));
 
-                return () => { unsubOrders(); unsubStock(); unsubFinanceAll(); unsubSettings(); };
+                // --- CLEANUP DATA > 7 DAYS ---
+                const runCleanup = async () => {
+                    try {
+                        const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
+                        const cutoffDate = new Date(sevenDaysAgo);
+                        const cutoffDateStr = `${cutoffDate.getFullYear()}-${String(cutoffDate.getMonth() + 1).padStart(2, '0')}-${String(cutoffDate.getDate()).padStart(2, '0')}`;
+
+                        // Hapus Orders lama
+                        if(orders.length > 0) {
+                            orders.forEach(o => {
+                                if (o.timestamp < sevenDaysAgo) {
+                                    fb.deleteDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'orders_kedai_titin', o.id)).catch(()=>{});
+                                }
+                            });
+                        }
+
+                        // Hapus Finance lama
+                        if(allFinance.length > 0) {
+                            allFinance.forEach(f => {
+                                if (f.id < cutoffDateStr) {
+                                    fb.deleteDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'finance_kedai_titin', f.id)).catch(()=>{});
+                                }
+                            });
+                        }
+
+                        // Hapus Stock lama
+                        if (fb.getDocs) {
+                            const stockCollRef = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'stock_kedai_titin');
+                            const stockSnap = await fb.getDocs(stockCollRef);
+                            stockSnap.forEach(doc => {
+                                if (doc.id < cutoffDateStr) fb.deleteDoc(doc.ref).catch(()=>{});
+                            });
+                        }
+                    } catch (err) { console.error("Cleanup error", err); }
+                };
+
+                const timerId = setTimeout(runCleanup, 3000); // Tunda sedikit agar tidak berat saat loading awal
+
+                return () => { unsubOrders(); unsubStock(); unsubFinanceAll(); unsubSettings(); clearTimeout(timerId); };
             }, [user, fb]);
+
+            // Sync dailyFinance state with selectedFinanceDate
+            useEffect(() => {
+                const data = allFinance.find(d => d.id === selectedFinanceDate);
+                if (data) {
+                    setDailyFinance({
+                        uangLaciSiang: data.uangLaciSiang || 0,
+                        uangLaciMalam: data.uangLaciMalam || 0,
+                        pengeluaranSiang: data.pengeluaranSiang || [],
+                        pengeluaranMalam: data.pengeluaranMalam || [],
+                        plusanSiang: data.plusanSiang || 0,
+                        plusanMalam: data.plusanMalam || 0,
+                        selisihTambahanSiang: data.selisihTambahanSiang || 0,
+                        selisihTambahanMalam: data.selisihTambahanMalam || 0
+                    });
+                } else {
+                    setDailyFinance({ 
+                        uangLaciSiang: 0, uangLaciMalam: 0, 
+                        pengeluaranSiang: [], pengeluaranMalam: [],
+                        plusanSiang: 0, plusanMalam: 0,
+                        selisihTambahanSiang: 0, selisihTambahanMalam: 0
+                    });
+                }
+            }, [selectedFinanceDate, allFinance]);
 
             useEffect(() => {
                 if(showAdminLoginModal && passwordInputRef.current) passwordInputRef.current.focus();
@@ -312,6 +355,8 @@
 
             // --- COMPUTED DATA ---
             const isAuthorized = activeUser?.role === 'ADMIN' || isTempAdminUnlocked;
+            const isPastDate = selectedFinanceDate !== getTodayDocId();
+            const canEditFinance = isAuthorized || !isPastDate; // Hanya admin yang bisa edit hari kemarin
 
             const formatRupiah = (number) => {
                 return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(number);
@@ -322,20 +367,33 @@
                 setTimeout(() => setToast({ show: false, message: "", type: "success" }), 3500);
             };
 
+            // Array 7 Hari Terakhir untuk Dropdown Keuangan
+            const last7Days = useMemo(() => {
+                const days = [];
+                for (let i = 0; i < 7; i++) {
+                    const d = new Date();
+                    d.setDate(d.getDate() - i);
+                    const id = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                    const label = i === 0 ? 'Hari Ini' : d.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'short' });
+                    days.push({ id, label });
+                }
+                return days;
+            }, []);
+
             // Limit data untuk ditampilkan di UI (Hanya 200 terbaru) agar tidak lag
             const displayedOrders = useMemo(() => {
                 return orders.slice(0, 200);
             }, [orders]);
 
-            // Calculate Global Net Stats
+            // Calculate Global Net Stats (Semua waktu)
             const stats = useMemo(() => {
                 const now = new Date();
                 const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
                 const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
 
-                let dCash = 0, dQris = 0, dCount = 0;
-                let mCash = 0, mQris = 0, mCount = 0;
-                let oCash = 0, oQris = 0, oCount = orders.length;
+                let dCash = 0, dQris = 0;
+                let mCash = 0, mQris = 0;
+                let oCash = 0, oQris = 0;
 
                 orders.forEach(order => {
                     const ts = order.timestamp;
@@ -345,10 +403,8 @@
 
                     if (ts >= monthStart) {
                         if (order.isQris) mQris += price; else mCash += price;
-                        mCount++;
                         if (ts >= todayStart) {
                             if (order.isQris) dQris += price; else dCash += price;
-                            dCount++;
                         }
                     }
                 });
@@ -381,19 +437,20 @@
                     }
                 });
 
-                const calc = (cash, qris, plus, peng, count) => {
+                const calc = (cash, qris, plus, peng) => {
                     const bersihTunai = cash + plus - peng;
                     const totalBersih = bersihTunai + qris;
-                    return { bersihTunai, qris, totalBersih, count };
+                    return { bersihTunai, qris, totalBersih };
                 };
 
                 return {
-                    daily: calc(dCash, dQris, dPlus, dPeng, dCount),
-                    monthly: calc(mCash, mQris, mPlus, mPeng, mCount),
-                    overall: calc(oCash, oQris, oPlus, oPeng, oCount)
+                    daily: calc(dCash, dQris, dPlus, dPeng),
+                    monthly: calc(mCash, mQris, mPlus, mPeng),
+                    overall: calc(oCash, oQris, oPlus, oPeng)
                 };
             }, [orders, allFinance]);
 
+            // Untuk Stok Harian (Selalu Menghitung Hari Ini)
             const soldItems = useMemo(() => {
                 const counts = { SIANG: {}, MALAM: {} };
                 const todayStart = new Date();
@@ -403,42 +460,37 @@
                 orders.filter(o => o.timestamp >= todayTime).forEach(order => {
                     const session = order.session || 'SIANG';
                     if (order.items && Array.isArray(order.items)) {
-                        order.items.forEach(item => {
-                            counts[session][item.name] = (counts[session][item.name] || 0) + item.qty;
-                        });
-                    } else if (order.name) {
-                        const parts = order.name.split(', ');
-                        parts.forEach(part => {
-                            const match = part.match(/(.+) x(\d+)/);
-                            if (match) {
-                                const name = match[1].trim();
-                                const qty = parseInt(match[2]);
-                                counts[session][name] = (counts[session][name] || 0) + qty;
-                            }
-                        });
+                        order.items.forEach(item => { counts[session][item.name] = (counts[session][item.name] || 0) + item.qty; });
                     }
                 });
                 return counts;
             }, [orders]);
 
+            // Finance Stats Khusus untuk "Tanggal Terpilih"
             const financeStats = useMemo(() => {
-                const todayStart = new Date();
-                todayStart.setHours(0,0,0,0);
-                const todayTime = todayStart.getTime();
+                const selectedDateStart = new Date(selectedFinanceDate);
+                selectedDateStart.setHours(0,0,0,0);
+                const selectedDateEnd = selectedDateStart.getTime() + 86400000 - 1;
+
+                const ordersForSelectedDate = orders.filter(o => o.timestamp >= selectedDateStart.getTime() && o.timestamp <= selectedDateEnd);
 
                 let totalAllSiang = 0; let totalAllMalam = 0;
                 let grossCashSiang = 0; let grossCashMalam = 0;
                 let totalQrisSiang = 0; let totalQrisMalam = 0;
+                
+                const menuIncomeSiang = {};
+                const menuIncomeMalam = {};
 
-                orders.filter(o => o.timestamp >= todayTime).forEach(o => {
-                    if (o.session === 'SIANG' || !o.session) {
+                ordersForSelectedDate.forEach(o => {
+                    const session = o.session || 'SIANG';
+                    if (session === 'SIANG') {
                         totalAllSiang += o.price;
-                        if (o.isQris) totalQrisSiang += o.price;
-                        else grossCashSiang += o.price;
-                    } else if (o.session === 'MALAM') {
+                        if (o.isQris) totalQrisSiang += o.price; else grossCashSiang += o.price;
+                        if(o.items) o.items.forEach(it => menuIncomeSiang[it.name] = (menuIncomeSiang[it.name]||0) + (it.price * it.qty));
+                    } else if (session === 'MALAM') {
                         totalAllMalam += o.price;
-                        if (o.isQris) totalQrisMalam += o.price;
-                        else grossCashMalam += o.price;
+                        if (o.isQris) totalQrisMalam += o.price; else grossCashMalam += o.price;
+                        if(o.items) o.items.forEach(it => menuIncomeMalam[it.name] = (menuIncomeMalam[it.name]||0) + (it.price * it.qty));
                     }
                 });
 
@@ -448,23 +500,26 @@
                 const plusanSiang = dailyFinance.plusanSiang || 0;
                 const plusanMalam = dailyFinance.plusanMalam || 0;
 
-                const bersihSiang = grossCashSiang + plusanSiang - pengeluaranSiangTotal;
-                const bersihMalam = grossCashMalam + plusanMalam - pengeluaranMalamTotal;
+                const bersihTunaiSiang = grossCashSiang + plusanSiang - pengeluaranSiangTotal;
+                const bersihTunaiMalam = grossCashMalam + plusanMalam - pengeluaranMalamTotal;
+
+                const bersihTotalSiang = bersihTunaiSiang + totalQrisSiang;
+                const bersihTotalMalam = bersihTunaiMalam + totalQrisMalam;
 
                 const selisihTambahanSiang = dailyFinance.selisihTambahanSiang || 0;
                 const selisihTambahanMalam = dailyFinance.selisihTambahanMalam || 0;
 
-                const expectedCashSiang = bersihSiang + selisihTambahanSiang;
-                const expectedCashMalam = bersihMalam + selisihTambahanMalam;
+                const expectedCashSiang = bersihTunaiSiang + selisihTambahanSiang;
+                const expectedCashMalam = bersihTunaiMalam + selisihTambahanMalam;
 
                 const selisihAkhirSiang = (dailyFinance.uangLaciSiang || 0) - expectedCashSiang;
                 const selisihAkhirMalam = (dailyFinance.uangLaciMalam || 0) - expectedCashMalam;
 
                 return { 
-                    siang: { totalAll: totalAllSiang, grossCash: grossCashSiang, totalQris: totalQrisSiang, pengeluaran: pengeluaranSiangTotal, plusan: plusanSiang, bersih: bersihSiang, expectedCash: expectedCashSiang, selisihTambahan: selisihTambahanSiang, selisih: selisihAkhirSiang },
-                    malam: { totalAll: totalAllMalam, grossCash: grossCashMalam, totalQris: totalQrisMalam, pengeluaran: pengeluaranMalamTotal, plusan: plusanMalam, bersih: bersihMalam, expectedCash: expectedCashMalam, selisihTambahan: selisihTambahanMalam, selisih: selisihAkhirMalam }
+                    siang: { menuIncome: menuIncomeSiang, totalAll: totalAllSiang, grossCash: grossCashSiang, totalQris: totalQrisSiang, pengeluaran: pengeluaranSiangTotal, plusan: plusanSiang, bersihTunai: bersihTunaiSiang, bersihTotal: bersihTotalSiang, expectedCash: expectedCashSiang, selisihTambahan: selisihTambahanSiang, selisih: selisihAkhirSiang },
+                    malam: { menuIncome: menuIncomeMalam, totalAll: totalAllMalam, grossCash: grossCashMalam, totalQris: totalQrisMalam, pengeluaran: pengeluaranMalamTotal, plusan: plusanMalam, bersihTunai: bersihTunaiMalam, bersihTotal: bersihTotalMalam, expectedCash: expectedCashMalam, selisihTambahan: selisihTambahanMalam, selisih: selisihAkhirMalam }
                 };
-            }, [orders, dailyFinance]);
+            }, [orders, dailyFinance, selectedFinanceDate]);
 
             const currentCartTotal = useMemo(() => cart.reduce((sum, item) => sum + (item.price * item.qty), 0), [cart]);
 
@@ -606,7 +661,7 @@
             const saveFinanceToDb = async (sessionType) => {
                 if (!user || !fb || fb === 'NO_DB') return;
                 try {
-                    const financeRef = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'finance_kedai_titin', getTodayDocId());
+                    const financeRef = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'finance_kedai_titin', selectedFinanceDate);
                     const updateData = sessionType === 'SIANG' 
                         ? { 
                             uangLaciSiang: dailyFinance.uangLaciSiang,
@@ -633,7 +688,7 @@
                 
                 if (!user || !fb || fb === 'NO_DB') return;
                 try {
-                    const financeRef = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'finance_kedai_titin', getTodayDocId());
+                    const financeRef = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'finance_kedai_titin', selectedFinanceDate);
                     await fb.setDoc(financeRef, { [fieldToUpdate]: [...currentExpenses, newExpense] }, { merge: true });
                     setExpenseInputs(prev => ({ ...prev, [sessionType]: { ket: '', biaya: '' } }));
                     showToast("Pengeluaran ditambahkan", "success");
@@ -647,37 +702,25 @@
                 
                 if (!user || !fb || fb === 'NO_DB') return;
                 try {
-                    const financeRef = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'finance_kedai_titin', getTodayDocId());
+                    const financeRef = fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'finance_kedai_titin', selectedFinanceDate);
                     await fb.setDoc(financeRef, { [fieldToUpdate]: newExpenses }, { merge: true });
                     showToast("Pengeluaran dihapus", "success");
                 } catch (error) { showToast("Gagal menghapus pengeluaran", "error"); }
             };
 
-            const exportToCSV = (type) => {
-                let dataToExport = orders;
-                let filename = `Laporan_Kedai_Keseluruhan_${new Date().toLocaleDateString('id-ID')}.csv`;
-
-                if (type === 'MONTH') {
-                    const now = new Date();
-                    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-                    dataToExport = orders.filter(o => o.timestamp >= monthStart);
-                    filename = `Laporan_Kedai_Bulan_Ini_${new Date().toLocaleDateString('id-ID')}.csv`;
-                }
-
-                if (dataToExport.length === 0) { 
-                    showToast("Belum ada data untuk diekspor.", "error"); 
-                    setShowExportModal(false);
-                    return; 
-                }
-
+            const exportToCSV = () => {
+                if (orders.length === 0) { showToast("Belum ada data untuk diekspor.", "error"); setShowExportModal(false); return; }
+                
                 const csvRows = [["Tanggal", "Waktu", "Rincian Pesanan", "Sesi", "Kasir", "Total Harga (Rp)"].join(',')];
-                dataToExport.forEach(order => {
+                orders.forEach(order => {
                     const d = new Date(order.timestamp);
                     csvRows.push([d.toLocaleDateString('id-ID'), d.toLocaleTimeString('id-ID'), `"${order.name.replace(/"/g, '""')}"`, order.session || "SIANG", order.kasir ? `"${order.kasir}"` : "Tidak Diketahui", order.price].join(','));
                 });
+                
                 const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
                 const url = URL.createObjectURL(blob);
-                const link = document.createElement("a"); link.setAttribute("href", url); link.setAttribute("download", filename);
+                const link = document.createElement("a"); link.setAttribute("href", url); 
+                link.setAttribute("download", `Laporan_Kedai_7_Hari_${new Date().toLocaleDateString('id-ID')}.csv`);
                 document.body.appendChild(link); link.click(); document.body.removeChild(link);
                 
                 showToast("Laporan berhasil diunduh!", "success");
@@ -820,10 +863,11 @@
                         
                         {/* ================= TAB POS KASIR ================= */}
                         {activeTab === 'POS' && (
-                            <div className="fade-in">
-                                <div className="flex flex-col lg:flex-row gap-6">
+                            <div className="fade-in flex flex-col gap-6">
+                                {/* BARIS ATAS: MENU & STRUK BERSEBELAHAN */}
+                                <div className="flex flex-col lg:flex-row gap-6 items-start">
                                     {/* KIRI: MENU */}
-                                    <div className="w-full lg:w-[45%] xl:w-1/3 flex flex-col gap-6">
+                                    <div className="w-full lg:w-[55%] flex flex-col gap-6">
                                         <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
                                             <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-gray-800 border-b pb-2">
                                                 <Icon name="coffee" className="w-5 h-5 text-orange-500" />
@@ -854,8 +898,10 @@
                                                 })}
                                             </div>
                                         </div>
+                                    </div>
 
-                                        {/* KERANJANG */}
+                                    {/* KANAN: KERANJANG */}
+                                    <div className="w-full lg:w-[45%]">
                                         <div className="bg-white p-5 rounded-2xl shadow-sm border-t-4 border-orange-500 relative sticky top-20">
                                             <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-gray-800 border-b pb-3">
                                                 <Icon name="shopping-cart" className="w-5 h-5 text-orange-500" />
@@ -911,85 +957,85 @@
                                             </div>
                                         </div>
                                     </div>
+                                </div>
 
-                                    {/* KANAN: RIWAYAT */}
-                                    <div className="w-full lg:w-[55%] xl:w-2/3">
-                                        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col h-full">
-                                            <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50 rounded-t-2xl">
-                                                <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-                                                    <Icon name="history" className="w-5 h-5 text-gray-500" /> Riwayat Transaksi
-                                                </h2>
-                                                <button onClick={() => setShowExportModal(true)} className="bg-green-600 hover:bg-green-700 text-white text-sm font-semibold py-2 px-4 rounded-xl shadow-sm transition flex items-center gap-2">
-                                                    <Icon name="download" className="w-4 h-4" /> Ekspor (Excel)
-                                                </button>
-                                            </div>
-                                            <div className="overflow-x-auto">
-                                                <table className="w-full text-left border-collapse min-w-[500px]">
-                                                    <thead>
-                                                        <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider border-b border-gray-100">
-                                                            <th className="p-3 font-bold">Waktu</th>
-                                                            <th className="p-3 font-bold w-1/2">Pesanan</th>
-                                                            <th className="p-3 font-bold">Total</th>
-                                                            <th className="p-3 font-bold text-center">Opsi</th>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody className="divide-y divide-gray-100">
-                                                        {displayedOrders.length === 0 ? (
-                                                            <tr>
-                                                                <td colSpan="4" className="p-12 text-center text-gray-400">
-                                                                    <div className="flex flex-col items-center gap-3">
-                                                                        <Icon name="inbox" className="w-12 h-12 text-gray-300" />
-                                                                        <p>Belum ada data transaksi.</p>
-                                                                    </div>
-                                                                </td>
-                                                            </tr>
-                                                        ) : (
-                                                            displayedOrders.map((order, index) => {
-                                                                const dateObj = new Date(order.timestamp);
-                                                                const currentDateString = dateObj.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-                                                                let showDateSeparator = index === 0 || currentDateString !== new Date(displayedOrders[index - 1].timestamp).toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-
-                                                                return (
-                                                                    <React.Fragment key={order.id}>
-                                                                        {showDateSeparator && (
-                                                                            <tr className="bg-orange-50"><td colSpan="4" className="px-4 py-1.5 text-center text-xs font-bold text-orange-800 border-y border-orange-100">{currentDateString}</td></tr>
-                                                                        )}
-                                                                        <tr className="hover:bg-gray-50 transition-colors group">
-                                                                            <td className="p-3 whitespace-nowrap align-top">
-                                                                                <div className="text-sm font-bold text-gray-800">{dateObj.toLocaleTimeString('id-ID', {hour: '2-digit', minute:'2-digit'})}</div>
-                                                                                <div className="text-xs text-gray-400 mt-1 flex items-center gap-1"><Icon name="user" className="w-3 h-3"/> {order.kasir || '-'}</div>
-                                                                                <div className="text-xs text-gray-400 mt-1">{order.session === 'MALAM' ? 'Sesi Malam' : 'Sesi Siang'}</div>
-                                                                            </td>
-                                                                            <td className="p-3">
-                                                                                <div className="font-medium text-gray-800 text-sm leading-snug">
-                                                                                    {order.items ? order.items.map((it, i) => (
-                                                                                        <div key={i} className="flex items-start gap-1.5 mb-1"><span className="text-orange-500 mt-0.5">•</span> {it.name} <span className="text-gray-400 font-normal ml-1">x{it.qty}</span></div>
-                                                                                    )) : order.name.split(', ').map((str, i) => <div key={i} className="flex items-start gap-1.5 mb-1"><span className="text-orange-500 mt-0.5">•</span>{str}</div>)}
-                                                                                </div>
-                                                                            </td>
-                                                                            <td className="p-3 align-top">
-                                                                                <span className="font-bold text-gray-800 block mb-1">{formatRupiah(order.price)}</span>
-                                                                                {order.isQris && <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded"><Icon name="qr-code" className="w-3 h-3"/> QRIS</span>}
-                                                                            </td>
-                                                                            <td className="p-3 text-center align-top">
-                                                                                <button onClick={() => handleDeleteClick(order.id)} className={`p-2 rounded-lg transition opacity-100 lg:opacity-0 group-hover:opacity-100 ${isAuthorized ? 'text-red-500 hover:bg-red-50' : 'text-gray-400 hover:text-red-500'}`}>
-                                                                                    <Icon name={isAuthorized ? "trash-2" : "lock"} className="w-4 h-4" />
-                                                                                </button>
-                                                                            </td>
-                                                                        </tr>
-                                                                    </React.Fragment>
-                                                                );
-                                                            })
-                                                        )}
-                                                    </tbody>
-                                                </table>
-                                            </div>
-                                            {orders.length > 200 && (
-                                                <div className="p-3 text-center text-xs text-gray-500 bg-gray-50 border-t border-gray-100 rounded-b-2xl">
-                                                    Menampilkan 200 dari total {orders.length} transaksi terakhir.
-                                                </div>
-                                            )}
+                                {/* BARIS BAWAH: RIWAYAT TRANSAKSI */}
+                                <div className="w-full">
+                                    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col h-full">
+                                        <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50 rounded-t-2xl">
+                                            <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                                                <Icon name="history" className="w-5 h-5 text-gray-500" /> Riwayat Transaksi
+                                            </h2>
+                                            <button onClick={() => setShowExportModal(true)} className="bg-green-600 hover:bg-green-700 text-white text-sm font-semibold py-2 px-4 rounded-xl shadow-sm transition flex items-center gap-2">
+                                                <Icon name="download" className="w-4 h-4" /> Ekspor (Excel)
+                                            </button>
                                         </div>
+                                        <div className="overflow-x-auto">
+                                            <table className="w-full text-left border-collapse min-w-[500px]">
+                                                <thead>
+                                                    <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider border-b border-gray-100">
+                                                        <th className="p-3 font-bold">Waktu</th>
+                                                        <th className="p-3 font-bold w-1/2">Pesanan</th>
+                                                        <th className="p-3 font-bold">Total</th>
+                                                        <th className="p-3 font-bold text-center">Opsi</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-gray-100">
+                                                    {displayedOrders.length === 0 ? (
+                                                        <tr>
+                                                            <td colSpan="4" className="p-12 text-center text-gray-400">
+                                                                <div className="flex flex-col items-center gap-3">
+                                                                    <Icon name="inbox" className="w-12 h-12 text-gray-300" />
+                                                                    <p>Belum ada data transaksi.</p>
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    ) : (
+                                                        displayedOrders.map((order, index) => {
+                                                            const dateObj = new Date(order.timestamp);
+                                                            const currentDateString = dateObj.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+                                                            let showDateSeparator = index === 0 || currentDateString !== new Date(displayedOrders[index - 1].timestamp).toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+
+                                                            return (
+                                                                <React.Fragment key={order.id}>
+                                                                    {showDateSeparator && (
+                                                                        <tr className="bg-orange-50"><td colSpan="4" className="px-4 py-1.5 text-center text-xs font-bold text-orange-800 border-y border-orange-100">{currentDateString}</td></tr>
+                                                                    )}
+                                                                    <tr className="hover:bg-gray-50 transition-colors group">
+                                                                        <td className="p-3 whitespace-nowrap align-top">
+                                                                            <div className="text-sm font-bold text-gray-800">{dateObj.toLocaleTimeString('id-ID', {hour: '2-digit', minute:'2-digit'})}</div>
+                                                                            <div className="text-xs text-gray-400 mt-1 flex items-center gap-1"><Icon name="user" className="w-3 h-3"/> {order.kasir || '-'}</div>
+                                                                            <div className="text-xs text-gray-400 mt-1">{order.session === 'MALAM' ? 'Sesi Malam' : 'Sesi Siang'}</div>
+                                                                        </td>
+                                                                        <td className="p-3">
+                                                                            <div className="font-medium text-gray-800 text-sm leading-snug">
+                                                                                {order.items ? order.items.map((it, i) => (
+                                                                                    <div key={i} className="flex items-start gap-1.5 mb-1"><span className="text-orange-500 mt-0.5">•</span> {it.name} <span className="text-gray-400 font-normal ml-1">x{it.qty}</span></div>
+                                                                                )) : order.name.split(', ').map((str, i) => <div key={i} className="flex items-start gap-1.5 mb-1"><span className="text-orange-500 mt-0.5">•</span>{str}</div>)}
+                                                                            </div>
+                                                                        </td>
+                                                                        <td className="p-3 align-top">
+                                                                            <span className="font-bold text-gray-800 block mb-1">{formatRupiah(order.price)}</span>
+                                                                            {order.isQris && <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded"><Icon name="qr-code" className="w-3 h-3"/> QRIS</span>}
+                                                                        </td>
+                                                                        <td className="p-3 text-center align-top">
+                                                                            <button onClick={() => handleDeleteClick(order.id)} className={`p-2 rounded-lg transition opacity-100 lg:opacity-0 group-hover:opacity-100 ${isAuthorized ? 'text-red-500 hover:bg-red-50' : 'text-gray-400 hover:text-red-500'}`}>
+                                                                                <Icon name={isAuthorized ? "trash-2" : "lock"} className="w-4 h-4" />
+                                                                            </button>
+                                                                        </td>
+                                                                    </tr>
+                                                                </React.Fragment>
+                                                            );
+                                                        })
+                                                    )}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                        {orders.length > 200 && (
+                                            <div className="p-3 text-center text-xs text-gray-500 bg-gray-50 border-t border-gray-100 rounded-b-2xl">
+                                                Menampilkan 200 dari total {orders.length} transaksi terakhir.
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             </div>
@@ -1076,47 +1122,38 @@
                         {/* ================= TAB KEUANGAN ================= */}
                         {activeTab === 'KEUANGAN' && (
                             <div className="fade-in max-w-5xl mx-auto space-y-6">
-                                {/* STATISTIK GLOBAL (HANYA ADMIN) */}
-                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                                    <div className="bg-white p-5 rounded-2xl shadow-sm border border-orange-100 flex items-center gap-4">
-                                        <div className="bg-orange-100 p-4 rounded-xl text-orange-600"><Icon name="sun" className="w-8 h-8" /></div>
-                                        <div>
-                                            <p className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Hari Ini (Bersih)</p>
-                                            <h3 className="text-2xl font-bold text-gray-800">{formatRupiah(stats.daily.totalBersih)}</h3>
-                                            <p className="text-xs font-medium text-gray-500 mt-1">Tunai: {formatRupiah(stats.daily.bersihTunai)} | QRIS: {formatRupiah(stats.daily.qris)}</p>
-                                        </div>
+                                
+                                {/* OPSI PILIH TANGGAL (7 HARI TERAKHIR) */}
+                                <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex items-center justify-between">
+                                    <span className="font-bold text-gray-700 flex items-center gap-2"><Icon name="calendar" className="w-5 h-5"/> Laporan Keuangan:</span>
+                                    <select
+                                        value={selectedFinanceDate}
+                                        onChange={(e) => setSelectedFinanceDate(e.target.value)}
+                                        className="p-2 border border-gray-300 rounded-lg outline-none focus:border-orange-500 font-semibold text-gray-800 bg-gray-50"
+                                    >
+                                        {last7Days.map(d => (
+                                            <option key={d.id} value={d.id}>{d.label} ({d.id})</option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                {!canEditFinance && (
+                                    <div className="bg-red-50 text-red-700 p-3 rounded-xl border border-red-200 text-sm font-semibold flex items-center gap-2">
+                                        <Icon name="alert-triangle" className="w-5 h-5"/> Mode Hanya-Lihat. Hanya Admin yang dapat mengedit data hari sebelumnya.
                                     </div>
-                                    <div onClick={handleLockedCardClick} className={`bg-white p-5 rounded-2xl shadow-sm border border-red-100 flex items-center gap-4 transition-all fade-in ${!isAuthorized ? 'cursor-pointer hover:bg-red-50 hover:shadow-md' : ''}`}>
-                                        <div className={`p-4 rounded-xl ${isAuthorized ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-500'}`}>
-                                            <Icon name="calendar-days" className="w-8 h-8" />
-                                        </div>
-                                        <div className="flex-1">
-                                            <p className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Bulan Ini (Bersih)</p>
-                                            {isAuthorized ? (
-                                                <>
-                                                    <h3 className="text-2xl font-bold text-gray-800">{formatRupiah(stats.monthly.totalBersih)}</h3>
-                                                    <p className="text-[10px] text-gray-500 mt-1">Tunai: {formatRupiah(stats.monthly.bersihTunai)} | QRIS: {formatRupiah(stats.monthly.qris)}</p>
-                                                </>
-                                            ) : (
-                                                <p className="text-sm font-medium text-gray-400 mt-1 italic flex items-center gap-1"><Icon name="lock" className="w-3 h-3" /><span>Ketuk untuk buka</span></p>
-                                            )}
-                                        </div>
-                                    </div>
-                                    <div onClick={handleLockedCardClick} className={`p-5 rounded-2xl shadow-md flex items-center gap-4 transition-all fade-in ${!isAuthorized ? 'bg-white border border-gray-200 cursor-pointer hover:bg-gray-50 text-gray-800' : 'bg-gradient-to-br from-yellow-400 to-orange-500 text-white'}`}>
-                                        <div className={`p-4 rounded-xl ${isAuthorized ? 'bg-white/20 backdrop-blur-sm' : 'bg-gray-100 text-gray-500'}`}>
-                                            <Icon name="wallet" className="w-8 h-8" />
-                                        </div>
-                                        <div className="flex-1">
-                                            <p className={`text-sm font-semibold uppercase tracking-wider ${isAuthorized ? 'text-yellow-100' : 'text-gray-500'}`}>Total Keseluruhan (Bersih)</p>
-                                            {isAuthorized ? (
-                                                <>
-                                                    <h3 className="text-2xl font-bold">{formatRupiah(stats.overall.totalBersih)}</h3>
-                                                    <p className="text-[10px] text-yellow-100 mt-1 opacity-90">Tunai: {formatRupiah(stats.overall.bersihTunai)} | QRIS: {formatRupiah(stats.overall.qris)}</p>
-                                                </>
-                                            ) : (
-                                                <p className="text-sm font-medium text-gray-400 mt-1 italic flex items-center gap-1"><Icon name="lock" className="w-3 h-3" /><span>Ketuk untuk buka</span></p>
-                                            )}
-                                        </div>
+                                )}
+
+                                {/* STATISTIK HARIAN (BISA DILIHAT KASIR & ADMIN) */}
+                                <div className="bg-white p-5 rounded-2xl shadow-sm border border-green-100 flex items-center gap-4">
+                                    <div className="bg-green-100 p-4 rounded-xl text-green-600"><Icon name="wallet" className="w-8 h-8" /></div>
+                                    <div>
+                                        <p className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Total Pendapatan Bersih ({selectedFinanceDate === getTodayDocId() ? 'Hari Ini' : selectedFinanceDate})</p>
+                                        <h3 className={`text-2xl font-bold ${(financeStats.siang.bersihTotal + financeStats.malam.bersihTotal) < 0 ? 'text-red-600' : 'text-gray-800'}`}>
+                                            {formatRupiah(financeStats.siang.bersihTotal + financeStats.malam.bersihTotal)}
+                                        </h3>
+                                        <p className="text-[10px] sm:text-xs font-medium text-gray-500 mt-1">
+                                            Tunai: {formatRupiah(financeStats.siang.bersihTunai + financeStats.malam.bersihTunai)} | QRIS: {formatRupiah(financeStats.siang.totalQris + financeStats.malam.totalQris)}
+                                        </p>
                                     </div>
                                 </div>
 
@@ -1127,25 +1164,42 @@
                                     </div>
 
                                     <div className="flex flex-col lg:flex-row border-b border-gray-100">
-                                        {/* Kiri: Pengeluaran */}
-                                        <div className="p-5 lg:w-1/2 border-b lg:border-b-0 lg:border-r border-gray-100">
-                                            <h3 className="font-bold text-gray-700 mb-3 flex items-center gap-2"><Icon name="receipt" className="w-4 h-4"/> Rincian Pengeluaran</h3>
-                                            <form className="flex gap-2 mb-4" onSubmit={(e) => { e.preventDefault(); handleAddExpense('SIANG'); }}>
-                                                <input type="text" placeholder="Keterangan..." value={expenseInputs.SIANG.ket} onChange={e=>setExpenseInputs(prev=>({...prev, SIANG: {...prev.SIANG, ket: e.target.value}}))} className="w-full px-3 py-2 border rounded-lg text-sm outline-none focus:border-orange-500"/>
-                                                <input type="number" placeholder="Biaya (Rp)" value={expenseInputs.SIANG.biaya} onChange={e=>setExpenseInputs(prev=>({...prev, SIANG: {...prev.SIANG, biaya: e.target.value}}))} className="w-32 px-3 py-2 border rounded-lg text-sm outline-none focus:border-orange-500"/>
-                                                <button type="submit" className="bg-gray-800 text-white p-2 rounded-lg hover:bg-gray-900"><Icon name="plus" className="w-5 h-5"/></button>
-                                            </form>
-                                            <div className="space-y-2 max-h-[150px] overflow-y-auto">
-                                                {(!dailyFinance.pengeluaranSiang || dailyFinance.pengeluaranSiang.length === 0) && <p className="text-sm text-gray-400 italic">Belum ada pengeluaran dicatat.</p>}
-                                                {dailyFinance.pengeluaranSiang?.map(exp => (
-                                                    <div key={exp.id} className="flex justify-between items-center bg-gray-50 p-2 rounded-lg border border-gray-100">
-                                                        <span className="text-sm font-semibold">{exp.ket}</span>
-                                                        <div className="flex items-center gap-3">
-                                                            <span className="text-sm font-bold text-red-500">-{formatRupiah(exp.biaya)}</span>
-                                                            <button onClick={() => handleDeleteExpense('SIANG', exp.id)} className="text-gray-400 hover:text-red-500"><Icon name="x" className="w-4 h-4"/></button>
+                                        {/* Kiri: Menu Income & Pengeluaran */}
+                                        <div className="p-5 lg:w-1/2 border-b lg:border-b-0 lg:border-r border-gray-100 space-y-6">
+                                            <div>
+                                                <h3 className="font-bold text-gray-700 mb-3 flex items-center gap-2"><Icon name="pie-chart" className="w-4 h-4"/> Rincian Penjualan Menu</h3>
+                                                <div className="space-y-1.5 bg-gray-50 p-3 rounded-xl border border-gray-100 text-sm">
+                                                    {Object.keys(financeStats.siang.menuIncome).length === 0 && <p className="text-gray-400 italic">Belum ada penjualan menu.</p>}
+                                                    {Object.entries(financeStats.siang.menuIncome).map(([name, total], idx) => (
+                                                        <div key={idx} className="flex justify-between items-center">
+                                                            <span className="text-gray-600">{name}</span>
+                                                            <span className="font-bold text-gray-800">{formatRupiah(total)}</span>
                                                         </div>
-                                                    </div>
-                                                ))}
+                                                    ))}
+                                                </div>
+                                            </div>
+                                            
+                                            <div>
+                                                <h3 className="font-bold text-gray-700 mb-3 flex items-center gap-2"><Icon name="receipt" className="w-4 h-4"/> Rincian Pengeluaran</h3>
+                                                {canEditFinance && (
+                                                    <form className="flex gap-2 mb-4" onSubmit={(e) => { e.preventDefault(); handleAddExpense('SIANG'); }}>
+                                                        <input type="text" placeholder="Keterangan..." value={expenseInputs.SIANG.ket} onChange={e=>setExpenseInputs(prev=>({...prev, SIANG: {...prev.SIANG, ket: e.target.value}}))} className="w-full px-3 py-2 border rounded-lg text-sm outline-none focus:border-orange-500"/>
+                                                        <input type="number" placeholder="Biaya (Rp)" value={expenseInputs.SIANG.biaya} onChange={e=>setExpenseInputs(prev=>({...prev, SIANG: {...prev.SIANG, biaya: e.target.value}}))} className="w-32 px-3 py-2 border rounded-lg text-sm outline-none focus:border-orange-500"/>
+                                                        <button type="submit" className="bg-gray-800 text-white p-2 rounded-lg hover:bg-gray-900"><Icon name="plus" className="w-5 h-5"/></button>
+                                                    </form>
+                                                )}
+                                                <div className="space-y-2 max-h-[150px] overflow-y-auto">
+                                                    {(!dailyFinance.pengeluaranSiang || dailyFinance.pengeluaranSiang.length === 0) && <p className="text-sm text-gray-400 italic">Belum ada pengeluaran dicatat.</p>}
+                                                    {dailyFinance.pengeluaranSiang?.map(exp => (
+                                                        <div key={exp.id} className="flex justify-between items-center bg-gray-50 p-2 rounded-lg border border-gray-100">
+                                                            <span className="text-sm font-semibold">{exp.ket}</span>
+                                                            <div className="flex items-center gap-3">
+                                                                <span className="text-sm font-bold text-red-500">-{formatRupiah(exp.biaya)}</span>
+                                                                {canEditFinance && <button onClick={() => handleDeleteExpense('SIANG', exp.id)} className="text-gray-400 hover:text-red-500"><Icon name="x" className="w-4 h-4"/></button>}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
                                             </div>
                                         </div>
                                         
@@ -1170,7 +1224,7 @@
                                             </div>
                                             <div className="flex justify-between items-center">
                                                 <span className="text-sm text-gray-600">Plusan (+):</span>
-                                                <input type="number" value={dailyFinance.plusanSiang || ''} onChange={(e) => setDailyFinance(prev => ({...prev, plusanSiang: Number(e.target.value)}))} className="w-32 px-2 py-1 border border-gray-300 rounded text-right text-sm focus:border-orange-500 outline-none font-bold" placeholder="0"/>
+                                                <input disabled={!canEditFinance} type="number" value={dailyFinance.plusanSiang || ''} onChange={(e) => setDailyFinance(prev => ({...prev, plusanSiang: Number(e.target.value)}))} className="w-32 px-2 py-1 border border-gray-300 rounded text-right text-sm focus:border-orange-500 outline-none font-bold disabled:bg-gray-100" placeholder="0"/>
                                             </div>
                                             <div className="flex justify-between items-center pb-2 border-b border-gray-200">
                                                 <span className="text-sm text-gray-600">Total Pengeluaran (-):</span>
@@ -1178,13 +1232,13 @@
                                             </div>
                                             
                                             <div className="flex justify-between items-center pt-1">
-                                                <span className="text-sm font-bold text-gray-800">Pendapatan Bersih:</span>
-                                                <span className="font-black text-lg text-green-600">{formatRupiah(financeStats.siang.bersih)}</span>
+                                                <span className="text-sm font-bold text-gray-800">Pendapatan Bersih (Tunai):</span>
+                                                <span className={`font-black text-lg ${financeStats.siang.bersihTunai < 0 ? 'text-red-600' : 'text-green-600'}`}>{formatRupiah(financeStats.siang.bersihTunai)}</span>
                                             </div>
                                             
                                             <div className="flex justify-between items-center pt-3 mt-3 border-t border-gray-200">
                                                 <span className="text-sm text-gray-600">Selisih Tambahan (+):</span>
-                                                <input type="number" value={dailyFinance.selisihTambahanSiang || ''} onChange={(e) => setDailyFinance(prev => ({...prev, selisihTambahanSiang: Number(e.target.value)}))} className="w-32 px-2 py-1 border border-gray-300 rounded text-right text-sm focus:border-orange-500 outline-none font-bold" placeholder="0"/>
+                                                <input disabled={!canEditFinance} type="number" value={dailyFinance.selisihTambahanSiang || ''} onChange={(e) => setDailyFinance(prev => ({...prev, selisihTambahanSiang: Number(e.target.value)}))} className="w-32 px-2 py-1 border border-gray-300 rounded text-right text-sm focus:border-orange-500 outline-none font-bold disabled:bg-gray-100" placeholder="0"/>
                                             </div>
                                         </div>
                                     </div>
@@ -1194,8 +1248,8 @@
                                         <div className="flex-1 w-full">
                                             <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Hitung Uang Fisik di Laci</label>
                                             <div className="flex gap-2">
-                                                <input type="number" value={dailyFinance.uangLaciSiang || ''} onChange={(e) => setDailyFinance(prev => ({...prev, uangLaciSiang: Number(e.target.value)}))} className="w-full p-3 text-xl font-bold text-gray-800 border-2 border-gray-200 rounded-xl focus:border-orange-500 outline-none" placeholder="0"/>
-                                                <button onClick={() => saveFinanceToDb('SIANG')} className="bg-gray-800 hover:bg-gray-900 text-white font-bold px-5 rounded-xl flex items-center gap-2"><Icon name="save" className="w-5 h-5"/> Simpan</button>
+                                                <input disabled={!canEditFinance} type="number" value={dailyFinance.uangLaciSiang || ''} onChange={(e) => setDailyFinance(prev => ({...prev, uangLaciSiang: Number(e.target.value)}))} className="w-full p-3 text-xl font-bold text-gray-800 border-2 border-gray-200 rounded-xl focus:border-orange-500 outline-none disabled:bg-gray-100" placeholder="0"/>
+                                                {canEditFinance && <button onClick={() => saveFinanceToDb('SIANG')} className="bg-gray-800 hover:bg-gray-900 text-white font-bold px-5 rounded-xl flex items-center gap-2"><Icon name="save" className="w-5 h-5"/> Simpan</button>}
                                             </div>
                                         </div>
                                         <div className={`p-4 rounded-xl w-full lg:w-5/12 border ${financeStats.siang.selisih === 0 ? 'bg-green-50 border-green-200 text-green-700' : financeStats.siang.selisih < 0 ? 'bg-red-50 border-red-200 text-red-700' : 'bg-blue-50 border-blue-200 text-blue-700'}`}>
@@ -1213,25 +1267,42 @@
                                     </div>
 
                                     <div className="flex flex-col lg:flex-row border-b border-gray-100">
-                                        {/* Kiri: Pengeluaran */}
-                                        <div className="p-5 lg:w-1/2 border-b lg:border-b-0 lg:border-r border-gray-100">
-                                            <h3 className="font-bold text-gray-700 mb-3 flex items-center gap-2"><Icon name="receipt" className="w-4 h-4"/> Rincian Pengeluaran</h3>
-                                            <form className="flex gap-2 mb-4" onSubmit={(e) => { e.preventDefault(); handleAddExpense('MALAM'); }}>
-                                                <input type="text" placeholder="Keterangan..." value={expenseInputs.MALAM.ket} onChange={e=>setExpenseInputs(prev=>({...prev, MALAM: {...prev.MALAM, ket: e.target.value}}))} className="w-full px-3 py-2 border rounded-lg text-sm outline-none focus:border-indigo-500"/>
-                                                <input type="number" placeholder="Biaya (Rp)" value={expenseInputs.MALAM.biaya} onChange={e=>setExpenseInputs(prev=>({...prev, MALAM: {...prev.MALAM, biaya: e.target.value}}))} className="w-32 px-3 py-2 border rounded-lg text-sm outline-none focus:border-indigo-500"/>
-                                                <button type="submit" className="bg-gray-800 text-white p-2 rounded-lg hover:bg-gray-900"><Icon name="plus" className="w-5 h-5"/></button>
-                                            </form>
-                                            <div className="space-y-2 max-h-[150px] overflow-y-auto">
-                                                {(!dailyFinance.pengeluaranMalam || dailyFinance.pengeluaranMalam.length === 0) && <p className="text-sm text-gray-400 italic">Belum ada pengeluaran dicatat.</p>}
-                                                {dailyFinance.pengeluaranMalam?.map(exp => (
-                                                    <div key={exp.id} className="flex justify-between items-center bg-gray-50 p-2 rounded-lg border border-gray-100">
-                                                        <span className="text-sm font-semibold">{exp.ket}</span>
-                                                        <div className="flex items-center gap-3">
-                                                            <span className="text-sm font-bold text-red-500">-{formatRupiah(exp.biaya)}</span>
-                                                            <button onClick={() => handleDeleteExpense('MALAM', exp.id)} className="text-gray-400 hover:text-red-500"><Icon name="x" className="w-4 h-4"/></button>
+                                        {/* Kiri: Menu Income & Pengeluaran */}
+                                        <div className="p-5 lg:w-1/2 border-b lg:border-b-0 lg:border-r border-gray-100 space-y-6">
+                                            <div>
+                                                <h3 className="font-bold text-gray-700 mb-3 flex items-center gap-2"><Icon name="pie-chart" className="w-4 h-4"/> Rincian Penjualan Menu</h3>
+                                                <div className="space-y-1.5 bg-gray-50 p-3 rounded-xl border border-gray-100 text-sm">
+                                                    {Object.keys(financeStats.malam.menuIncome).length === 0 && <p className="text-gray-400 italic">Belum ada penjualan menu.</p>}
+                                                    {Object.entries(financeStats.malam.menuIncome).map(([name, total], idx) => (
+                                                        <div key={idx} className="flex justify-between items-center">
+                                                            <span className="text-gray-600">{name}</span>
+                                                            <span className="font-bold text-gray-800">{formatRupiah(total)}</span>
                                                         </div>
-                                                    </div>
-                                                ))}
+                                                    ))}
+                                                </div>
+                                            </div>
+                                            
+                                            <div>
+                                                <h3 className="font-bold text-gray-700 mb-3 flex items-center gap-2"><Icon name="receipt" className="w-4 h-4"/> Rincian Pengeluaran</h3>
+                                                {canEditFinance && (
+                                                    <form className="flex gap-2 mb-4" onSubmit={(e) => { e.preventDefault(); handleAddExpense('MALAM'); }}>
+                                                        <input type="text" placeholder="Keterangan..." value={expenseInputs.MALAM.ket} onChange={e=>setExpenseInputs(prev=>({...prev, MALAM: {...prev.MALAM, ket: e.target.value}}))} className="w-full px-3 py-2 border rounded-lg text-sm outline-none focus:border-indigo-500"/>
+                                                        <input type="number" placeholder="Biaya (Rp)" value={expenseInputs.MALAM.biaya} onChange={e=>setExpenseInputs(prev=>({...prev, MALAM: {...prev.MALAM, biaya: e.target.value}}))} className="w-32 px-3 py-2 border rounded-lg text-sm outline-none focus:border-indigo-500"/>
+                                                        <button type="submit" className="bg-gray-800 text-white p-2 rounded-lg hover:bg-gray-900"><Icon name="plus" className="w-5 h-5"/></button>
+                                                    </form>
+                                                )}
+                                                <div className="space-y-2 max-h-[150px] overflow-y-auto">
+                                                    {(!dailyFinance.pengeluaranMalam || dailyFinance.pengeluaranMalam.length === 0) && <p className="text-sm text-gray-400 italic">Belum ada pengeluaran dicatat.</p>}
+                                                    {dailyFinance.pengeluaranMalam?.map(exp => (
+                                                        <div key={exp.id} className="flex justify-between items-center bg-gray-50 p-2 rounded-lg border border-gray-100">
+                                                            <span className="text-sm font-semibold">{exp.ket}</span>
+                                                            <div className="flex items-center gap-3">
+                                                                <span className="text-sm font-bold text-red-500">-{formatRupiah(exp.biaya)}</span>
+                                                                {canEditFinance && <button onClick={() => handleDeleteExpense('MALAM', exp.id)} className="text-gray-400 hover:text-red-500"><Icon name="x" className="w-4 h-4"/></button>}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
                                             </div>
                                         </div>
                                         
@@ -1256,7 +1327,7 @@
                                             </div>
                                             <div className="flex justify-between items-center">
                                                 <span className="text-sm text-gray-600">Plusan (+):</span>
-                                                <input type="number" value={dailyFinance.plusanMalam || ''} onChange={(e) => setDailyFinance(prev => ({...prev, plusanMalam: Number(e.target.value)}))} className="w-32 px-2 py-1 border border-gray-300 rounded text-right text-sm focus:border-indigo-500 outline-none font-bold" placeholder="0"/>
+                                                <input disabled={!canEditFinance} type="number" value={dailyFinance.plusanMalam || ''} onChange={(e) => setDailyFinance(prev => ({...prev, plusanMalam: Number(e.target.value)}))} className="w-32 px-2 py-1 border border-gray-300 rounded text-right text-sm focus:border-indigo-500 outline-none font-bold disabled:bg-gray-100" placeholder="0"/>
                                             </div>
                                             <div className="flex justify-between items-center pb-2 border-b border-gray-200">
                                                 <span className="text-sm text-gray-600">Total Pengeluaran (-):</span>
@@ -1264,13 +1335,13 @@
                                             </div>
                                             
                                             <div className="flex justify-between items-center pt-1">
-                                                <span className="text-sm font-bold text-gray-800">Pendapatan Bersih:</span>
-                                                <span className="font-black text-lg text-green-600">{formatRupiah(financeStats.malam.bersih)}</span>
+                                                <span className="text-sm font-bold text-gray-800">Pendapatan Bersih (Tunai):</span>
+                                                <span className={`font-black text-lg ${financeStats.malam.bersihTunai < 0 ? 'text-red-600' : 'text-green-600'}`}>{formatRupiah(financeStats.malam.bersihTunai)}</span>
                                             </div>
                                             
                                             <div className="flex justify-between items-center pt-3 mt-3 border-t border-gray-200">
                                                 <span className="text-sm text-gray-600">Selisih Tambahan (+):</span>
-                                                <input type="number" value={dailyFinance.selisihTambahanMalam || ''} onChange={(e) => setDailyFinance(prev => ({...prev, selisihTambahanMalam: Number(e.target.value)}))} className="w-32 px-2 py-1 border border-gray-300 rounded text-right text-sm focus:border-indigo-500 outline-none font-bold" placeholder="0"/>
+                                                <input disabled={!canEditFinance} type="number" value={dailyFinance.selisihTambahanMalam || ''} onChange={(e) => setDailyFinance(prev => ({...prev, selisihTambahanMalam: Number(e.target.value)}))} className="w-32 px-2 py-1 border border-gray-300 rounded text-right text-sm focus:border-indigo-500 outline-none font-bold disabled:bg-gray-100" placeholder="0"/>
                                             </div>
                                         </div>
                                     </div>
@@ -1280,8 +1351,8 @@
                                         <div className="flex-1 w-full">
                                             <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">Hitung Uang Fisik di Laci</label>
                                             <div className="flex gap-2">
-                                                <input type="number" value={dailyFinance.uangLaciMalam || ''} onChange={(e) => setDailyFinance(prev => ({...prev, uangLaciMalam: Number(e.target.value)}))} className="w-full p-3 text-xl font-bold text-gray-800 border-2 border-gray-200 rounded-xl focus:border-indigo-500 outline-none" placeholder="0"/>
-                                                <button onClick={() => saveFinanceToDb('MALAM')} className="bg-gray-800 hover:bg-gray-900 text-white font-bold px-5 rounded-xl flex items-center gap-2"><Icon name="save" className="w-5 h-5"/> Simpan</button>
+                                                <input disabled={!canEditFinance} type="number" value={dailyFinance.uangLaciMalam || ''} onChange={(e) => setDailyFinance(prev => ({...prev, uangLaciMalam: Number(e.target.value)}))} className="w-full p-3 text-xl font-bold text-gray-800 border-2 border-gray-200 rounded-xl focus:border-indigo-500 outline-none disabled:bg-gray-100" placeholder="0"/>
+                                                {canEditFinance && <button onClick={() => saveFinanceToDb('MALAM')} className="bg-gray-800 hover:bg-gray-900 text-white font-bold px-5 rounded-xl flex items-center gap-2"><Icon name="save" className="w-5 h-5"/> Simpan</button>}
                                             </div>
                                         </div>
                                         <div className={`p-4 rounded-xl w-full lg:w-5/12 border ${financeStats.malam.selisih === 0 ? 'bg-green-50 border-green-200 text-green-700' : financeStats.malam.selisih < 0 ? 'bg-red-50 border-red-200 text-red-700' : 'bg-blue-50 border-blue-200 text-blue-700'}`}>
@@ -1357,14 +1428,11 @@
                                     <Icon name="download" className="w-8 h-8" />
                                 </div>
                                 <h3 className="text-xl font-bold text-gray-800 mb-2">Ekspor Laporan (Excel)</h3>
-                                <p className="text-sm text-gray-500 mb-6">Pilih rentang waktu data pesanan yang ingin Anda unduh.</p>
+                                <p className="text-sm text-gray-500 mb-6">Unduh data riwayat transaksi Anda.</p>
                                 
                                 <div className="flex flex-col gap-3">
-                                    <button onClick={() => exportToCSV('MONTH')} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl shadow-md transition flex justify-center items-center gap-2">
-                                        <Icon name="calendar-days" className="w-5 h-5"/> Laporan Bulan Ini
-                                    </button>
-                                    <button onClick={() => exportToCSV('ALL')} className="w-full bg-gray-800 hover:bg-gray-900 text-white font-bold py-3 rounded-xl shadow-md transition flex justify-center items-center gap-2">
-                                        <Icon name="database" className="w-5 h-5"/> Seluruh Data
+                                    <button onClick={() => exportToCSV()} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl shadow-md transition flex justify-center items-center gap-2">
+                                        <Icon name="database" className="w-5 h-5"/> Unduh Seluruh Data
                                     </button>
                                     <button onClick={() => setShowExportModal(false)} className="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 rounded-xl transition mt-2">
                                         Batal
